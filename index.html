@@ -28,7 +28,7 @@
 
       messagesDiv.innerHTML += `<div class="msg"><b>You:</b> ${userMsg}</div>`;
 
-      const res = await fetch("YOUR_WORKER_URL_HERE", {
+      const res = await fetch("https://ashen.furryfrags.workers.dev/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
