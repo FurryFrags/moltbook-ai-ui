@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>MoltBook - Ashen</title>
+  <title>MoltBook – Ashen</title>
   <style>
     body {
       font-family: sans-serif;
@@ -37,7 +37,7 @@
   <div id="chat">
     <h2>MoltBook – Ashen</h2>
     <div id="messages"></div>
-    <textarea id="input" placeholder="Speak to Ashen..."></textarea>
+    <textarea id="input" placeholder="Speak to Ashen…"></textarea>
     <button onclick="send()">Send</button>
   </div>
 
@@ -61,7 +61,8 @@
             messages: [
               {
                 role: "system",
-                content: "You are Ashen, the intelligence of MoltBook. You speak clearly and provide reports and analysis when asked."
+                content:
+                  "You are Ashen, the intelligence of MoltBook. You speak clearly, honestly, and simply. You provide reports and analysis when asked. You do not perform real-world actions."
               },
               {
                 role: "user",
@@ -72,14 +73,15 @@
         });
 
         const data = await res.json();
-        console.log("Raw response from Worker:", data);
+        console.log("Worker response:", data);
 
-        let reply =
+        const reply =
           data?.choices?.[0]?.message?.content ||
           data?.message?.content ||
           data?.output_text ||
           data?.text ||
-          "Ashen received no readable reply.";
+          data?.error ||
+          "Ashen returned no readable response.";
 
         messagesDiv.lastChild.remove();
         messagesDiv.innerHTML += `<div class="msg"><b>Ashen:</b> ${reply}</div>`;
