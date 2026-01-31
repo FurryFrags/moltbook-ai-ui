@@ -28,9 +28,6 @@
       border: none;
       cursor: pointer;
     }
-    button:hover {
-      background: #444;
-    }
     .msg {
       margin: 10px 0;
     }
@@ -53,21 +50,18 @@
       if (!userMsg) return;
 
       input.value = "";
-
       messagesDiv.innerHTML += `<div class="msg"><b>You:</b> ${userMsg}</div>`;
       messagesDiv.innerHTML += `<div class="msg"><i>Ashen is thinking…</i></div>`;
 
       try {
         const res = await fetch("https://ashen.furryfrags.workers.dev", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             messages: [
               {
                 role: "system",
-                content: "You are Ashen, the intelligence of MoltBook. You speak clearly, honestly, and simply. You provide reports and analysis when asked."
+                content: "You are Ashen, the intelligence of MoltBook. You speak clearly and provide reports and analysis when asked."
               },
               {
                 role: "user",
@@ -77,20 +71,21 @@
           })
         });
 
-        if (!res.ok) {
-          throw new Error("HTTP " + res.status);
-        }
-
         const data = await res.json();
-        const reply = data.choices[0].message.content;
+        console.log("Raw response from Worker:", data);
 
-        // remove the “thinking” line
+        let reply =
+          data?.choices?.[0]?.message?.content ||
+          data?.message?.content ||
+          data?.output_text ||
+          data?.text ||
+          "Ashen received no readable reply.";
+
         messagesDiv.lastChild.remove();
-
         messagesDiv.innerHTML += `<div class="msg"><b>Ashen:</b> ${reply}</div>`;
       } catch (err) {
         messagesDiv.lastChild.remove();
-        messagesDiv.innerHTML += `<div class="msg"><b>Error:</b> Could not reach Ashen.</div>`;
+        messagesDiv.innerHTML += `<div class="msg"><b>Error:</b> ${err.message}</div>`;
         console.error(err);
       }
     }
