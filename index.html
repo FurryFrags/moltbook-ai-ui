@@ -12,9 +12,9 @@
       max-width: 600px;
       margin: auto;
     }
-    textarea {
+    textarea, input {
       width: 100%;
-      height: 60px;
+      margin-top: 5px;
     }
     button {
       width: 100%;
@@ -29,6 +29,7 @@
 <body>
   <div id="chat">
     <h2>MoltBook – Ashen</h2>
+    <input id="password" type="password" placeholder="Password">
     <div id="messages"></div>
     <textarea id="input"></textarea>
     <button onclick="send()">Send</button>
@@ -37,6 +38,7 @@
   <script>
     async function send() {
       const input = document.getElementById("input");
+      const password = document.getElementById("password").value;
       const messages = document.getElementById("messages");
       const text = input.value.trim();
       if (!text) return;
@@ -50,14 +52,22 @@
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: text })
+            body: JSON.stringify({
+              message: text,
+              password: password
+            })
           }
         );
 
         const data = await res.json();
-        messages.innerHTML += `<div class="msg"><b>Ashen:</b> ${data.reply}</div>`;
+
+        if (data.error) {
+          messages.innerHTML += `<div class="msg"><b>Error:</b> ${data.error}</div>`;
+        } else {
+          messages.innerHTML += `<div class="msg"><b>Ashen:</b> ${data.reply}</div>`;
+        }
       } catch {
-        messages.innerHTML += `<div class="msg"><b>Error:</b> Ashen is silent.</div>`;
+        messages.innerHTML += `<div class="msg"><b>Error:</b> Ashen unreachable.</div>`;
       }
     }
   </script>
