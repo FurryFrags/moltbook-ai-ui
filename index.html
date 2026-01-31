@@ -3,64 +3,97 @@
 <head>
   <title>MoltBook - Ashen</title>
   <style>
-    body { font-family: sans-serif; background: #111; color: #eee; }
-    #chat { max-width: 600px; margin: auto; }
-    textarea { width: 100%; height: 60px; }
-    button { width: 100%; padding: 10px; }
-    .msg { margin: 10px 0; }
+    body {
+      font-family: sans-serif;
+      background: #111;
+      color: #eee;
+    }
+    #chat {
+      max-width: 600px;
+      margin: auto;
+      padding-top: 20px;
+    }
+    textarea {
+      width: 100%;
+      height: 60px;
+      background: #222;
+      color: #eee;
+      border: 1px solid #444;
+    }
+    button {
+      width: 100%;
+      padding: 10px;
+      background: #333;
+      color: #eee;
+      border: none;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #444;
+    }
+    .msg {
+      margin: 10px 0;
+    }
   </style>
 </head>
 <body>
   <div id="chat">
-    <h2>MoltBook - Ashen</h2>
+    <h2>MoltBook – Ashen</h2>
     <div id="messages"></div>
-    <textarea id="input"></textarea>
+    <textarea id="input" placeholder="Speak to Ashen..."></textarea>
     <button onclick="send()">Send</button>
   </div>
 
   <script>
-async function send() {
-  const input = document.getElementById("input");
-  const messagesDiv = document.getElementById("messages");
+    async function send() {
+      const input = document.getElementById("input");
+      const messagesDiv = document.getElementById("messages");
 
-  const userMsg = input.value.trim();
-  if (!userMsg) return;
+      const userMsg = input.value.trim();
+      if (!userMsg) return;
 
-  input.value = "";
+      input.value = "";
 
-  messagesDiv.innerHTML += `<div class="msg"><b>You:</b> ${userMsg}</div>`;
+      messagesDiv.innerHTML += `<div class="msg"><b>You:</b> ${userMsg}</div>`;
+      messagesDiv.innerHTML += `<div class="msg"><i>Ashen is thinking…</i></div>`;
 
-  try {
-    const res = await fetch("https://ashen.furryfrags.workers.dev/", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: [
-          {
-  role: "system",
-  content: "You are Ashen, the intelligence of MoltBook. You speak clearly, honestly, and simply. You provide reports and analysis when asked."
-},
-          {
-            role: "user",
-            content: userMsg
-          }
-        ]
-      })
-    });
+      try {
+        const res = await fetch("https://ashen.furryfrags.workers.dev", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            messages: [
+              {
+                role: "system",
+                content: "You are Ashen, the intelligence of MoltBook. You speak clearly, honestly, and simply. You provide reports and analysis when asked."
+              },
+              {
+                role: "user",
+                content: userMsg
+              }
+            ]
+          })
+        });
 
-    if (!res.ok) {
-      throw new Error("Server error");
+        if (!res.ok) {
+          throw new Error("HTTP " + res.status);
+        }
+
+        const data = await res.json();
+        const reply = data.choices[0].message.content;
+
+        // remove the “thinking” line
+        messagesDiv.lastChild.remove();
+
+        messagesDiv.innerHTML += `<div class="msg"><b>Ashen:</b> ${reply}</div>`;
+      } catch (err) {
+        messagesDiv.lastChild.remove();
+        messagesDiv.innerHTML += `<div class="msg"><b>Error:</b> Could not reach Ashen.</div>`;
+        console.error(err);
+      }
     }
-
-    const data = await res.json();
-    const reply = data.choices[0].message.content;
-
-    messagesDiv.innerHTML += `<div class="msg"><b>Ashen:</b> ${reply}</div>`;
-  } catch (err) {
-    messagesDiv.innerHTML += `<div class="msg"><b>Error:</b> Could not reach Ashen.</div>`;
-  }
-}
-
   </script>
 </body>
 </html>
