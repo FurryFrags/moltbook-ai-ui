@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>MoltBook AI</title>
+  <title>MoltBook - Ashen</title>
   <style>
     body { font-family: sans-serif; background: #111; color: #eee; }
     #chat { max-width: 600px; margin: auto; }
@@ -12,7 +12,7 @@
 </head>
 <body>
   <div id="chat">
-    <h2>MoltBook AI</h2>
+    <h2>MoltBook - Ashen</h2>
     <div id="messages"></div>
     <textarea id="input"></textarea>
     <button onclick="send()">Send</button>
@@ -32,14 +32,23 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [{ role: "user", content: userMsg }]
-        })
+  messages: [
+    {
+      role: "system",
+      content: "You are Ashen, the intelligence of MoltBook. You speak clearly, calmly, and simply. You help the user think, learn, and reflect. You avoid complex words unless necessary. You are steady, thoughtful, and honest."
+    },
+    {
+      role: "user",
+      content: userMsg
+    }
+  ]
+})
       });
 
       const data = await res.json();
       const reply = data.choices[0].message.content;
 
-      messagesDiv.innerHTML += `<div class="msg"><b>MoltBook:</b> ${reply}</div>`;
+      messagesDiv.innerHTML += `<div class="msg"><b>Ashen:</b> ${reply}</div>`;
     }
   </script>
 </body>
