@@ -1,206 +1,199 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <title>MoltBook — Ashen (adaptive)</title>
-  <style>
-    body { background:#111; color:#eee; font-family:sans-serif; padding:20px; }
-    #app { max-width:820px; margin:auto; }
-    textarea, input[type=password] { width:100%; padding:8px; background:#121212; border:1px solid #333; color:#eee; }
-    .controls { background:#0b0b0b; padding:10px; border-radius:8px; margin-bottom:12px; }
-    label { display:block; color:#ddd; font-size:13px; margin-bottom:6px; }
-    .sl { display:flex; gap:10px; align-items:center; }
-    .sl input[type=range]{ flex:1; }
-    .val { min-width:120px; text-align:right; color:#cfcfcf; font-size:12px; }
-    button { padding:10px; width:100%; margin-top:8px; background:#2b2b2b; color:#fff; border:none; cursor:pointer; border-radius:6px; }
-    .msg { margin:10px 0; padding:8px; border-radius:6px; background:#161616; }
-    .meta { font-size:12px; color:#aaa; margin-top:6px; }
-    .stats { display:flex; gap:12px; flex-wrap:wrap; margin-top:8px; }
-    .stat { background:#0f0f0f; border-radius:6px; padding:8px; min-width:180px; }
-  </style>
+<meta charset="utf-8"/>
+<title>MoltBook — Ashen Portal (Agent + Browser)</title>
+<style>
+  body{font-family:sans-serif;margin:0;background:#0f0f10;color:#eee}
+  #app{display:grid;grid-template-columns:360px 1fr 360px;gap:12px;padding:12px;height:100vh;box-sizing:border-box}
+  .panel{background:#111;border-radius:8px;padding:12px;overflow:auto}
+  .panel h3{margin:0 0 8px 0}
+  #messages{height:60vh;overflow:auto}
+  .msg{padding:8px;border-radius:6px;margin-bottom:8px;background:#0b0b0b}
+  .controls{display:flex;gap:6px}
+  input[type=text],textarea{width:100%;padding:8px;background:#0b0b0b;border:1px solid #222;color:#eee;border-radius:6px}
+  button{background:#1f6feb;color:#fff;border:none;padding:8px;border-radius:6px;cursor:pointer}
+  .tab{padding:8px;border-radius:6px;margin-bottom:6px;background:#0b0b0b}
+  .console{font-family:monospace;font-size:12px;background:#060606;padding:8px;border-radius:6px;height:40vh;overflow:auto}
+  .small{font-size:12px;color:#aaa}
+</style>
 </head>
 <body>
-  <div id="app">
-    <h2>MoltBook — Ashen (adaptive)</h2>
-
-    <div class="controls">
-      <label>Password</label>
-      <input id="password" type="password" placeholder="Password (required)" />
-      <div style="margin-top:10px; color:#ddd;">Tone sliders — adjust primary behavior. Ashen will adapt slightly from conversation.</div>
-
-      <div style="margin-top:8px;">
-        <label>1) Political — Liberal ← → Conservative</label>
-        <div class="sl"><input id="s_political" type="range" min="0" max="100" /><div class="val" id="v_political"></div></div>
-      </div>
-
-      <div style="margin-top:8px;">
-        <label>2) Action — Aggressive ← → Passive ← → Defensive</label>
-        <div class="sl"><input id="s_action" type="range" min="0" max="100" /><div class="val" id="v_action"></div></div>
-      </div>
-
-      <div style="margin-top:8px;">
-        <label>3) Mood — Positive ← → Negative</label>
-        <div class="sl"><input id="s_mood" type="range" min="0" max="100" /><div class="val" id="v_mood"></div></div>
-      </div>
-
-      <div style="margin-top:8px;">
-        <label>4) Confidence — Confident ← → Not confident</label>
-        <div class="sl"><input id="s_confidence" type="range" min="0" max="100" /><div class="val" id="v_confidence"></div></div>
-      </div>
-
-      <div style="margin-top:8px;">
-        <label>5) Playfulness — Playful ← → Serious</label>
-        <div class="sl"><input id="s_play" type="range" min="0" max="100" /><div class="val" id="v_play"></div></div>
-      </div>
-
-      <div style="margin-top:10px;" class="meta">Tip: slider is primary control; conversation nudges Ashen and applied settings show final result.</div>
-      <button id="saveSettings">Save settings locally</button>
+<div id="app">
+  <div class="panel" id="left">
+    <h3>Command Portal</h3>
+    <div class="small">Password (required)</div>
+    <input id="pw" type="password" placeholder="Password"/>
+    <div style="height:8px"></div>
+    <textarea id="input" placeholder="Chat or enter a command (JSON allowed)"></textarea>
+    <div class="controls" style="margin-top:8px">
+      <button id="sendBtn">Send (Chat)</button>
+      <button id="openBtn">Open Tab</button>
     </div>
 
-    <div id="chatBox">
-      <div id="messages"></div>
-      <textarea id="input" placeholder="Talk to Ashen..."></textarea>
-      <div style="display:flex; gap:8px; margin-top:8px;">
-        <button id="sendBtn">Send</button>
-        <button id="clearBtn">Clear</button>
-      </div>
+    <div style="margin-top:12px">
+      <h3>Short Commands</h3>
+      <div class="small">Open tab:</div>
+      <input id="openUrl" type="text" placeholder="https://example.com"/>
+      <div style="height:6px"></div>
+      <div class="small">Fetch / Summarize / Close: select in right pane and use buttons</div>
+    </div>
 
-      <div class="stats">
-        <div class="stat">
-          <strong>Applied settings (what Ashen used)</strong>
-          <div id="applied">None yet</div>
-        </div>
-        <div class="stat">
-          <strong>Inferred settings (from convo)</strong>
-          <div id="inferred">None yet</div>
-        </div>
-        <div class="stat">
-          <strong>Last autonomous report</strong>
-          <div id="autoReport">None yet</div>
-        </div>
-      </div>
+    <div style="margin-top:12px">
+      <h3>Conversation</h3>
+      <div id="messages"></div>
     </div>
   </div>
 
-  <script>
-    // Worker URL - change to your worker if different
-    const WORKER = "https://ashen.furryfrags.workers.dev";
+  <div class="panel" id="center">
+    <h3>Ashen Reply</h3>
+    <div id="replyArea" style="white-space:pre-wrap"></div>
+  </div>
 
-    // DOM
-    const sPolitical = document.getElementById("s_political");
-    const sAction = document.getElementById("s_action");
-    const sMood = document.getElementById("s_mood");
-    const sConfidence = document.getElementById("s_confidence");
-    const sPlay = document.getElementById("s_play");
+  <div class="panel" id="right">
+    <h3>Agent Tabs & Console</h3>
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <button id="refreshTabs">Refresh Tabs</button>
+      <button id="fetchTab">Fetch</button>
+      <button id="summTab">Summarize</button>
+      <button id="closeTab">Close</button>
+    </div>
+    <div id="tabsList"></div>
+    <h3 style="margin-top:12px">Console</h3>
+    <div class="console" id="console"></div>
+  </div>
+</div>
 
-    const vPolitical = document.getElementById("v_political");
-    const vAction = document.getElementById("v_action");
-    const vMood = document.getElementById("v_mood");
-    const vConfidence = document.getElementById("v_confidence");
-    const vPlay = document.getElementById("v_play");
+<script>
+const WORKER_URL = "https://ashen.furryfrags.workers.dev/"; // change if needed
+const pwEl = document.getElementById('pw');
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('sendBtn');
+const openBtn = document.getElementById('openBtn');
+const openUrl = document.getElementById('openUrl');
+const messagesDiv = document.getElementById('messages');
+const replyArea = document.getElementById('replyArea');
+const tabsList = document.getElementById('tabsList');
+const consoleDiv = document.getElementById('console');
+const refreshTabsBtn = document.getElementById('refreshTabs');
+const fetchTabBtn = document.getElementById('fetchTab');
+const summTabBtn = document.getElementById('summTab');
+const closeTabBtn = document.getElementById('closeTab');
 
-    const saveBtn = document.getElementById("saveSettings");
-    const sendBtn = document.getElementById("sendBtn");
-    const clearBtn = document.getElementById("clearBtn");
-    const messagesDiv = document.getElementById("messages");
-    const input = document.getElementById("input");
-    const pwd = document.getElementById("password");
+let selectedTabId = null;
 
-    const appliedDiv = document.getElementById("applied");
-    const inferredDiv = document.getElementById("inferred");
-    const autoReportDiv = document.getElementById("autoReport");
+function appendMsg(who,text){ const d=document.createElement('div'); d.className='msg'; d.innerHTML=`<b>${who}:</b> ${escapeHtml(text)}`; messagesDiv.appendChild(d); messagesDiv.scrollTop = messagesDiv.scrollHeight; }
+function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-    // defaults
-    const DEFAULTS = { political:50, action:50, mood:50, confidence:50, playfulness:30 };
-    function loadSettings() {
-      const raw = localStorage.getItem("ashen_settings");
-      const s = raw ? JSON.parse(raw) : DEFAULTS;
-      sPolitical.value = s.political; sAction.value = s.action; sMood.value = s.mood; sConfidence.value = s.confidence; sPlay.value = s.playfulness;
-      updateLabels();
-    }
-
-    function updateLabels() {
-      vPolitical.textContent = displayPolitical(Number(sPolitical.value));
-      vAction.textContent = displayAction(Number(sAction.value));
-      vMood.textContent = `${Number(sMood.value)} (${Number(sMood.value) < 50 ? "positive" : Number(sMood.value) > 50 ? "negative" : "neutral"})`;
-      vConfidence.textContent = `${Number(sConfidence.value)} (${Number(sConfidence.value) < 50 ? "confident" : "cautious"})`;
-      vPlay.textContent = `${Number(sPlay.value)} (${Number(sPlay.value) < 50 ? "playful" : "serious"})`;
-    }
-    function displayPolitical(v){ if (v < 35) return `Liberal (${v})`; if (v<=65) return `Center (${v})`; return `Conservative (${v})`; }
-    function displayAction(v){ if (v < 34) return `Aggressive (${v})`; if (v<=66) return `Passive (${v})`; return `Defensive (${v})`; }
-
-    [sPolitical, sAction, sMood, sConfidence, sPlay].forEach(el => el.addEventListener("input", updateLabels));
-    loadSettings();
-
-    saveBtn.addEventListener("click", ()=>{
-      const s = { political: Number(sPolitical.value), action: Number(sAction.value), mood: Number(sMood.value), confidence: Number(sConfidence.value), playfulness: Number(sPlay.value) };
-      localStorage.setItem("ashen_settings", JSON.stringify(s));
-      alert("Saved locally.");
+async function callWorker(payload){
+  try {
+    const resp = await fetch(WORKER_URL, {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify(payload)
     });
+    return await resp.json();
+  } catch (e) {
+    return { error: String(e) };
+  }
+}
 
-    function appendMsg(who, text) {
-      const d = document.createElement("div");
-      d.className = "msg";
-      d.innerHTML = `<b>${who}:</b> ${escapeHtml(text)}`;
-      messagesDiv.appendChild(d);
-      window.scrollTo(0, document.body.scrollHeight);
-    }
-    function escapeHtml(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+sendBtn.onclick = async () => {
+  const pw = pwEl.value;
+  if(!pw){ alert('Password required'); return; }
+  const text = inputEl.value.trim();
+  if(!text) return;
+  appendMsg('You', text);
+  inputEl.value = '';
+  const res = await callWorker({ password: pw, message: text });
+  if(res.error) {
+    appendMsg('Error', res.error);
+    return;
+  }
+  if(res.reply) {
+    replyArea.textContent = res.reply;
+    appendMsg('Ashen', res.reply);
+  }
+  if(res.tabs) renderTabs(res.tabs);
+  if(res.console) renderConsole(res.console);
+};
 
-    async function send() {
-      const text = input.value.trim();
-      const password = pwd.value;
-      if (!password) { alert("Password required"); return; }
-      if (!text) return;
-      input.value = "";
-      appendMsg("You", text);
+openBtn.onclick = async () => {
+  const pw = pwEl.value;
+  const url = openUrl.value.trim();
+  if(!pw){ alert('Password required'); return; }
+  if(!url){ alert('Provide a URL'); return; }
+  appendMsg('You', `open_tab ${url}`);
+  const res = await callWorker({ password: pw, command: { type:'open_tab', url, fetchNow: true, summarizeAfter: true, words: 80 } });
+  if(res.error) appendMsg('Error', res.error);
+  else{
+    appendMsg('System', `Opened tab ${res.tab.id}`);
+    renderTabs(res.tabs);
+    renderConsole(res.console);
+  }
+};
 
-      const settings = { political: Number(sPolitical.value), action: Number(sAction.value), mood: Number(sMood.value), confidence: Number(sConfidence.value), playfulness: Number(sPlay.value) };
+refreshTabsBtn.onclick = async () => {
+  const pw = pwEl.value;
+  if(!pw){ alert('Password required'); return; }
+  const res = await callWorker({ password: pw, command: { type:'list_tabs' } });
+  if(res.tabs) renderTabs(res.tabs);
+  if(res.console) renderConsole(res.console);
+};
 
-      try {
-        const res = await fetch(WORKER, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ password, message: text, settings })
-        });
-        const data = await res.json();
-        if (data.error) {
-          appendMsg("Error", data.error);
-          return;
-        }
-        appendMsg("Ashen", data.reply || "(no reply)");
-        // show inferred & applied
-        if (data.inferred_settings) {
-          inferredDiv.innerHTML = Object.entries(data.inferred_settings).map(([k,v]) => `<div>${k}: ${v}</div>`).join("");
-        }
-        if (data.applied_settings) {
-          appliedDiv.innerHTML = Object.entries(data.applied_settings).map(([k,v]) => `<div>${k}: ${v}</div>`).join("");
-        }
-      } catch (e) {
-        appendMsg("Error", "Ashen unreachable.");
-      }
-    }
+function renderTabs(tabs){
+  tabsList.innerHTML = '';
+  for(const t of tabs){
+    const div = document.createElement('div');
+    div.className='tab';
+    div.innerHTML = `<div><input type="radio" name="tab" value="${t.id}" ${t.id===selectedTabId?'checked':''}/> <b>${escapeHtml(t.title||t.url)}</b></div>
+      <div class="small">${escapeHtml(t.url)}</div>
+      <div class="small">status: ${t.status} lastFetched: ${t.lastFetchedAt||'n/a'}</div>`;
+    tabsList.appendChild(div);
+  }
+  // attach radio click listeners
+  Array.from(tabsList.querySelectorAll('input[name="tab"]')).forEach(i=>i.onclick=()=>{ selectedTabId = i.value; });
+}
 
-    sendBtn.addEventListener("click", send);
-    input.addEventListener("keydown", (e)=> { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); });
-    clearBtn.addEventListener("click", ()=> { messagesDiv.innerHTML = ""; });
+fetchTabBtn.onclick = async () => {
+  if(!selectedTabId){ alert('Select a tab from the right'); return; }
+  const pw = pwEl.value; if(!pw){ alert('Password needed'); return; }
+  const res = await callWorker({ password: pw, command: { type:'fetch_tab', tabId: selectedTabId }});
+  if(res.tabs) renderTabs(res.tabs);
+  if(res.console) renderConsole(res.console);
+  appendMsg('System', `Fetch requested for ${selectedTabId}`);
+};
 
-    // load last autonomous report occasionally (poll)
-    async function loadAutoReport() {
-      try {
-        const res = await fetch(WORKER, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ password: pwd.value || "", message: "__status__" }) // harmless query to get internal saved report
-        });
-        const data = await res.json();
-        if (data && data.last_autonomous_report) autoReportDiv.textContent = data.last_autonomous_report;
-      } catch {}
-    }
+summTabBtn.onclick = async () => {
+  if(!selectedTabId){ alert('Select a tab'); return; }
+  const pw = pwEl.value; if(!pw){ alert('Password needed'); return; }
+  const res = await callWorker({ password: pw, command: { type:'summarize_tab', tabId: selectedTabId, words: 120 }});
+  if(res.result) appendMsg('System', `Summary: ${res.result.summary}`);
+  if(res.tabs) renderTabs(res.tabs);
+  if(res.console) renderConsole(res.console);
+};
 
-    // small interval to refresh applied/inferred periodically (optional)
-    setInterval(()=>{ /* optional: fetch status if needed */ }, 60000);
+closeTabBtn.onclick = async () => {
+  if(!selectedTabId){ alert('Select a tab'); return; }
+  const pw = pwEl.value; if(!pw){ alert('Password needed'); return; }
+  const res = await callWorker({ password: pw, command: { type:'close_tab', tabId: selectedTabId }});
+  if(res.tabs) renderTabs(res.tabs);
+  if(res.console) renderConsole(res.console);
+  appendMsg('System', `Closed ${selectedTabId}`);
+};
 
-  </script>
+function renderConsole(entries){
+  consoleDiv.innerHTML = '';
+  for(const e of entries.slice(-200).reverse()){
+    const line = document.createElement('div');
+    line.innerHTML = `<span class="small">[${e.ts}]</span> <b>${escapeHtml(e.level)}</b> ${escapeHtml(e.msg)}`;
+    consoleDiv.appendChild(line);
+  }
+  consoleDiv.scrollTop = consoleDiv.scrollHeight;
+}
+
+// initial load
+(async ()=>{ const res = await callWorker({ password: pwEl.value || "", command: { type:'list_tabs' } }); if(res.tabs) renderTabs(res.tabs); if(res.console) renderConsole(res.console); })();
+</script>
 </body>
 </html>
