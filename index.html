@@ -8,15 +8,19 @@
   #app{display:grid;grid-template-columns:360px 1fr 360px;gap:12px;padding:12px;height:100vh;box-sizing:border-box}
   .panel{background:#111;border-radius:8px;padding:12px;overflow:auto}
   .panel h3{margin:0 0 8px 0}
-  #messages{height:60vh;overflow:auto}
+  #messages{height:40vh;overflow:auto}
   .msg{padding:8px;border-radius:6px;margin-bottom:8px;background:#0b0b0b}
   .controls{display:flex;gap:6px}
   input[type=text],textarea{width:100%;padding:8px;background:#0b0b0b;border:1px solid #222;color:#eee;border-radius:6px}
   button{background:#1f6feb;color:#fff;border:none;padding:8px;border-radius:6px;cursor:pointer}
-  .tab{padding:8px;border-radius:6px;margin-bottom:6px;background:#0b0b0b}
+  .tab{padding:8px;border-radius:6px;margin-bottom:6px;background:#0b0b0b;cursor:pointer}
   .console{font-family:monospace;font-size:12px;background:#060606;padding:8px;border-radius:6px;height:40vh;overflow:auto}
   .small{font-size:12px;color:#aaa}
   .tab-id { font-family: monospace; color:#9ad; display:block; margin-bottom:6px; }
+  #replyArea{background:#0b0b0b;border-radius:6px;padding:12px;height:84vh;overflow:auto}
+  /* make snapshots visually contained */
+  #replyArea img{max-width:100%;height:auto;display:block}
+  #replyArea a{color:#7cc7ff}
 </style>
 </head>
 <body>
@@ -48,7 +52,8 @@
 
   <div class="panel" id="center">
     <h3>Ashen Reply</h3>
-    <div id="replyArea" style="white-space:pre-wrap"></div>
+    <!-- This area now renders sanitized HTML snapshots (server-side) -->
+    <div id="replyArea" style="white-space:normal"></div>
   </div>
 
   <div class="panel" id="right">
@@ -66,7 +71,7 @@
 </div>
 
 <script>
-const WORKER_URL = "https://ashen.furryfrags.workers.dev/"; // change to your worker URL
+const WORKER_URL = "https://ashen.furryfrags.workers.dev"; // your worker
 const pwEl = document.getElementById('pw');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
@@ -107,11 +112,10 @@ sendBtn.onclick = async () => {
   if(!text) return;
   appendMsg('You', text);
   inputEl.value = '';
-  // send as natural chat; Worker now auto-detects open/visit intents
   const res = await callWorker({ password: pw, message: text });
   if (res.error) { appendMsg('Error', res.error); return; }
   if (res.reply) {
-    replyArea.textContent = res.reply;
+    // show assistant text in top of snapshot area too
     appendMsg('Ashen', res.reply);
   }
   if (res.tabs) renderTabs(res.tabs);
@@ -126,9 +130,9 @@ openBtn.onclick = async () => {
   appendMsg('You', `open_tab ${url}`);
   const res = await callWorker({ password: pw, command: { type:'open_tab', url, fetchNow: true, summarizeAfter: true, words: 100 } });
   if (res.error) { appendMsg('Error', res.error); return; }
-  appendMsg('System', `Opened tab ${res.tab.id} (${res.tab.finalUrl || res.tab.url})`);
-  renderTabs(res.tabs);
-  renderConsole(res.console);
+  if (res.tab) appendMsg('System', `Opened tab ${res.tab.id} (${res.tab.finalUrl || res.tab.url})`);
+  if (res.tabs) renderTabs(res.tabs);
+  if (res.console) renderConsole(res.console);
 };
 
 refreshTabsBtn.onclick = async () => {
@@ -142,6 +146,7 @@ refreshTabsBtn.onclick = async () => {
 
 function renderTabs(tabs) {
   tabsList.innerHTML = '';
+  // show newest first
   for (const t of tabs.slice().reverse()) {
     const div = document.createElement('div');
     div.className = 'tab';
@@ -151,14 +156,36 @@ function renderTabs(tabs) {
       <div class="small">${escapeHtml(t.finalUrl || t.url)}</div>
       <div class="small">status: ${escapeHtml(t.status)} lastFetched: ${escapeHtml(t.lastFetchedAt || 'n/a')}</div>
     `;
-    div.onclick = () => {
+    div.onclick = async () => {
       selectedTabId = t.id;
       // highlight selection
       Array.from(tabsList.querySelectorAll('.tab')).forEach(el => el.style.outline = '');
       div.style.outline = '2px solid #2b6';
+      // load snapshot HTML for this tab and render in center panel
+      await loadTabContent(t.id);
     };
     tabsList.appendChild(div);
   }
+}
+
+async function loadTabContent(tabId) {
+  const pw = pwEl.value;
+  if(!pw){ alert('Password required'); return; }
+  const res = await callWorker({ password: pw, command: { type:'get_tab', tabId } });
+  if (res.error) { appendMsg('Error', res.error); return; }
+  if (res.tab) {
+    // sanitized HTML comes from worker; we set innerHTML intentionally
+    replyArea.innerHTML = res.tab.content || `<div class="small">No snapshot available for ${escapeHtml(tabId)}</div>`;
+    // also show the textual summary (if present) above content
+    if (res.tab.summary) {
+      const s = document.createElement('div');
+      s.className = 'small';
+      s.style.marginBottom = '8px';
+      s.innerHTML = `<b>Summary:</b> ${escapeHtml(res.tab.summary)}`;
+      replyArea.prepend(s);
+    }
+  }
+  if (res.console) renderConsole(res.console);
 }
 
 fetchTabBtn.onclick = async () => {
@@ -169,6 +196,8 @@ fetchTabBtn.onclick = async () => {
   if (res.tab) appendMsg('System', `Fetched ${res.tab.id} (${res.tab.finalUrl || res.tab.url})`); 
   if (res.tabs) renderTabs(res.tabs);
   if (res.console) renderConsole(res.console);
+  // automatically load fresh content
+  await loadTabContent(selectedTabId);
 };
 
 summTabBtn.onclick = async () => {
@@ -179,6 +208,8 @@ summTabBtn.onclick = async () => {
   if (res.result) appendMsg('System', `Summary for ${selectedTabId}: ${res.result.summary}`);
   if (res.tabs) renderTabs(res.tabs);
   if (res.console) renderConsole(res.console);
+  // reload to include summary
+  await loadTabContent(selectedTabId);
 };
 
 closeTabBtn.onclick = async () => {
