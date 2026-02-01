@@ -8,7 +8,7 @@
   #app{display:grid;grid-template-columns:360px 1fr 360px;gap:12px;padding:12px;height:100vh;box-sizing:border-box}
   .panel{background:#111;border-radius:8px;padding:12px;overflow:auto}
   .panel h3{margin:0 0 8px 0}
-  #messages{height:40vh;overflow:auto}
+  #messages{height:26vh;overflow:auto}
   .msg{padding:8px;border-radius:6px;margin-bottom:8px;background:#0b0b0b}
   .controls{display:flex;gap:6px}
   input[type=text],textarea{width:100%;padding:8px;background:#0b0b0b;border:1px solid #222;color:#eee;border-radius:6px}
@@ -17,10 +17,8 @@
   .console{font-family:monospace;font-size:12px;background:#060606;padding:8px;border-radius:6px;height:40vh;overflow:auto}
   .small{font-size:12px;color:#aaa}
   .tab-id { font-family: monospace; color:#9ad; display:block; margin-bottom:6px; }
-  #replyArea{background:#0b0b0b;border-radius:6px;padding:12px;height:84vh;overflow:auto}
-  /* make snapshots visually contained */
-  #replyArea img{max-width:100%;height:auto;display:block}
-  #replyArea a{color:#7cc7ff}
+  #replyArea { white-space:pre-wrap; padding:8px; background:#090909; border-radius:6px; min-height:60px }
+  #tabContent { white-space:pre-wrap; padding:12px; background:#060606; border-radius:6px; margin-top:12px; max-height:50vh; overflow:auto; font-family:monospace; font-size:13px; }
 </style>
 </head>
 <body>
@@ -52,8 +50,10 @@
 
   <div class="panel" id="center">
     <h3>Ashen Reply</h3>
-    <!-- This area now renders sanitized HTML snapshots (server-side) -->
-    <div id="replyArea" style="white-space:normal"></div>
+    <div id="replyArea"></div>
+
+    <h3 style="margin-top:12px">Selected Tab</h3>
+    <div id="tabContent">No tab selected.</div>
   </div>
 
   <div class="panel" id="right">
@@ -71,7 +71,7 @@
 </div>
 
 <script>
-const WORKER_URL = "https://ashen.furryfrags.workers.dev"; // your worker
+const WORKER_URL = "https://ashen.furryfrags.workers.dev"; // change to your worker URL (no trailing slash)
 const pwEl = document.getElementById('pw');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
@@ -79,6 +79,7 @@ const openBtn = document.getElementById('openBtn');
 const openUrl = document.getElementById('openUrl');
 const messagesDiv = document.getElementById('messages');
 const replyArea = document.getElementById('replyArea');
+const tabContentDiv = document.getElementById('tabContent');
 const tabsList = document.getElementById('tabsList');
 const consoleDiv = document.getElementById('console');
 const refreshTabsBtn = document.getElementById('refreshTabs');
@@ -87,15 +88,19 @@ const summTabBtn = document.getElementById('summTab');
 const closeTabBtn = document.getElementById('closeTab');
 
 let selectedTabId = null;
+let lastTabs = [];
 
 function appendMsg(who,text){ const d=document.createElement('div'); d.className='msg'; d.innerHTML=`<b>${who}:</b> ${escapeHtml(text)}`; messagesDiv.appendChild(d); messagesDiv.scrollTop = messagesDiv.scrollHeight; }
 function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 async function callWorker(payload){
   try {
+    const headers = { 'Content-Type':'application/json' };
+    const pw = pwEl.value;
+    if (pw) headers['Authorization'] = 'Bearer ' + pw; // preferred
     const resp = await fetch(WORKER_URL, {
       method:'POST',
-      headers:{ 'Content-Type':'application/json' },
+      headers,
       body: JSON.stringify(payload)
     });
     const data = await resp.json();
@@ -115,10 +120,10 @@ sendBtn.onclick = async () => {
   const res = await callWorker({ password: pw, message: text });
   if (res.error) { appendMsg('Error', res.error); return; }
   if (res.reply) {
-    // show assistant text in top of snapshot area too
+    replyArea.textContent = res.reply;
     appendMsg('Ashen', res.reply);
   }
-  if (res.tabs) renderTabs(res.tabs);
+  if (res.tabs) { renderTabs(res.tabs); }
   if (res.console) renderConsole(res.console);
 };
 
@@ -130,7 +135,10 @@ openBtn.onclick = async () => {
   appendMsg('You', `open_tab ${url}`);
   const res = await callWorker({ password: pw, command: { type:'open_tab', url, fetchNow: true, summarizeAfter: true, words: 100 } });
   if (res.error) { appendMsg('Error', res.error); return; }
-  if (res.tab) appendMsg('System', `Opened tab ${res.tab.id} (${res.tab.finalUrl || res.tab.url})`);
+  if (res.tab) {
+    appendMsg('System', `Opened tab ${res.tab.id} (${res.tab.finalUrl || res.tab.url})`);
+    showTab(res.tab.id, res.tabs);
+  }
   if (res.tabs) renderTabs(res.tabs);
   if (res.console) renderConsole(res.console);
 };
@@ -145,9 +153,10 @@ refreshTabsBtn.onclick = async () => {
 };
 
 function renderTabs(tabs) {
+  lastTabs = tabs || [];
   tabsList.innerHTML = '';
-  // show newest first
-  for (const t of tabs.slice().reverse()) {
+  // reverse so newest first visually
+  for (const t of (tabs || []).slice().reverse()) {
     const div = document.createElement('div');
     div.className = 'tab';
     div.innerHTML = `
@@ -156,36 +165,52 @@ function renderTabs(tabs) {
       <div class="small">${escapeHtml(t.finalUrl || t.url)}</div>
       <div class="small">status: ${escapeHtml(t.status)} lastFetched: ${escapeHtml(t.lastFetchedAt || 'n/a')}</div>
     `;
-    div.onclick = async () => {
+    div.onclick = () => {
       selectedTabId = t.id;
-      // highlight selection
       Array.from(tabsList.querySelectorAll('.tab')).forEach(el => el.style.outline = '');
       div.style.outline = '2px solid #2b6';
-      // load snapshot HTML for this tab and render in center panel
-      await loadTabContent(t.id);
+      displayTabContent(t);
     };
     tabsList.appendChild(div);
   }
+  // If nothing selected, try to select the first tab
+  if (!selectedTabId && lastTabs && lastTabs.length) {
+    const t = lastTabs[lastTabs.length - 1];
+    selectedTabId = t.id;
+    displayTabContent(t);
+    // highlight UI element
+    const first = tabsList.querySelector('.tab');
+    if (first) first.style.outline = '2px solid #2b6';
+  }
 }
 
-async function loadTabContent(tabId) {
-  const pw = pwEl.value;
-  if(!pw){ alert('Password required'); return; }
-  const res = await callWorker({ password: pw, command: { type:'get_tab', tabId } });
-  if (res.error) { appendMsg('Error', res.error); return; }
-  if (res.tab) {
-    // sanitized HTML comes from worker; we set innerHTML intentionally
-    replyArea.innerHTML = res.tab.content || `<div class="small">No snapshot available for ${escapeHtml(tabId)}</div>`;
-    // also show the textual summary (if present) above content
-    if (res.tab.summary) {
-      const s = document.createElement('div');
-      s.className = 'small';
-      s.style.marginBottom = '8px';
-      s.innerHTML = `<b>Summary:</b> ${escapeHtml(res.tab.summary)}`;
-      replyArea.prepend(s);
-    }
+function displayTabContent(tab) {
+  if (!tab) { tabContentDiv.textContent = 'No tab selected.'; return; }
+  const html = [];
+  html.push(`ID: ${tab.id}`);
+  html.push(`Title: ${tab.title || '(no title)'}`);
+  html.push(`URL: ${tab.finalUrl || tab.url}`);
+  html.push(`Status: ${tab.status}`);
+  if (tab.lastFetchedAt) html.push(`Last Fetched: ${tab.lastFetchedAt}`);
+  if (tab.summary) html.push(`\n--- Summary ---\n${tab.summary}`);
+  if (tab.content) {
+    html.push(`\n--- Content (truncated) ---\n${tab.content.slice(0, 20000)}`);
+  } else {
+    html.push(`\n(No content fetched yet)`);
   }
-  if (res.console) renderConsole(res.console);
+  tabContentDiv.textContent = html.join("\n\n");
+}
+
+function showTab(tabId, tabs) {
+  const t = (tabs || lastTabs || []).find(x => x.id === tabId);
+  if (t) {
+    selectedTabId = tabId;
+    displayTabContent(t);
+    renderTabs(tabs || lastTabs);
+  } else {
+    // request list and attempt to show
+    refreshTabsBtn.onclick();
+  }
 }
 
 fetchTabBtn.onclick = async () => {
@@ -193,11 +218,10 @@ fetchTabBtn.onclick = async () => {
   const pw = pwEl.value; if(!pw) { alert('Password required'); return; }
   const res = await callWorker({ password: pw, command: { type:'fetch_tab', tabId: selectedTabId } });
   if (res.error) { appendMsg('Error', res.error); return; }
-  if (res.tab) appendMsg('System', `Fetched ${res.tab.id} (${res.tab.finalUrl || res.tab.url})`); 
+  if (res.tab) appendMsg('System', `Fetched ${res.tab.id} (${res.tab.finalUrl || res.tab.url})`);
   if (res.tabs) renderTabs(res.tabs);
   if (res.console) renderConsole(res.console);
-  // automatically load fresh content
-  await loadTabContent(selectedTabId);
+  if (res.tab) displayTabContent(res.tab);
 };
 
 summTabBtn.onclick = async () => {
@@ -206,10 +230,9 @@ summTabBtn.onclick = async () => {
   const res = await callWorker({ password: pw, command: { type:'summarize_tab', tabId: selectedTabId, words: 120 }});
   if (res.error) { appendMsg('Error', res.error); return; }
   if (res.result) appendMsg('System', `Summary for ${selectedTabId}: ${res.result.summary}`);
+  if (res.tab) displayTabContent(res.tab);
   if (res.tabs) renderTabs(res.tabs);
   if (res.console) renderConsole(res.console);
-  // reload to include summary
-  await loadTabContent(selectedTabId);
 };
 
 closeTabBtn.onclick = async () => {
@@ -225,7 +248,7 @@ closeTabBtn.onclick = async () => {
 
 function renderConsole(entries) {
   consoleDiv.innerHTML = '';
-  for (const e of entries.slice(-200).reverse()) {
+  for (const e of (entries || []).slice(-200).reverse()) {
     const line = document.createElement('div');
     line.innerHTML = `<span class="small">[${escapeHtml(e.ts)}]</span> <b>${escapeHtml(e.level)}</b> ${escapeHtml(e.msg)}`;
     consoleDiv.appendChild(line);
