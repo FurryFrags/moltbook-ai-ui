@@ -16,6 +16,7 @@
   .tab{padding:8px;border-radius:6px;margin-bottom:6px;background:#0b0b0b}
   .console{font-family:monospace;font-size:12px;background:#060606;padding:8px;border-radius:6px;height:40vh;overflow:auto}
   .small{font-size:12px;color:#aaa}
+  .tab-id { font-family: monospace; color:#9ad; display:block; margin-bottom:6px; }
 </style>
 </head>
 <body>
@@ -25,7 +26,7 @@
     <div class="small">Password (required)</div>
     <input id="pw" type="password" placeholder="Password"/>
     <div style="height:8px"></div>
-    <textarea id="input" placeholder="Chat or enter a command (JSON allowed)"></textarea>
+    <textarea id="input" placeholder="Chat or enter a command (JSON allowed). Example: 'Try to go to x.com'"></textarea>
     <div class="controls" style="margin-top:8px">
       <button id="sendBtn">Send (Chat)</button>
       <button id="openBtn">Open Tab</button>
@@ -33,7 +34,7 @@
 
     <div style="margin-top:12px">
       <h3>Short Commands</h3>
-      <div class="small">Open tab:</div>
+      <div class="small">Open tab (paste URL):</div>
       <input id="openUrl" type="text" placeholder="https://example.com"/>
       <div style="height:6px"></div>
       <div class="small">Fetch / Summarize / Close: select in right pane and use buttons</div>
@@ -65,7 +66,7 @@
 </div>
 
 <script>
-const WORKER_URL = "https://ashen.furryfrags.workers.dev/"; // change if needed
+const WORKER_URL = "https://ashen.furryfrags.workers.dev/"; // change to your worker URL
 const pwEl = document.getElementById('pw');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
@@ -92,7 +93,8 @@ async function callWorker(payload){
       headers:{ 'Content-Type':'application/json' },
       body: JSON.stringify(payload)
     });
-    return await resp.json();
+    const data = await resp.json();
+    return data;
   } catch (e) {
     return { error: String(e) };
   }
@@ -105,17 +107,15 @@ sendBtn.onclick = async () => {
   if(!text) return;
   appendMsg('You', text);
   inputEl.value = '';
+  // send as natural chat; Worker now auto-detects open/visit intents
   const res = await callWorker({ password: pw, message: text });
-  if(res.error) {
-    appendMsg('Error', res.error);
-    return;
-  }
-  if(res.reply) {
+  if (res.error) { appendMsg('Error', res.error); return; }
+  if (res.reply) {
     replyArea.textContent = res.reply;
     appendMsg('Ashen', res.reply);
   }
-  if(res.tabs) renderTabs(res.tabs);
-  if(res.console) renderConsole(res.console);
+  if (res.tabs) renderTabs(res.tabs);
+  if (res.console) renderConsole(res.console);
 };
 
 openBtn.onclick = async () => {
@@ -124,76 +124,90 @@ openBtn.onclick = async () => {
   if(!pw){ alert('Password required'); return; }
   if(!url){ alert('Provide a URL'); return; }
   appendMsg('You', `open_tab ${url}`);
-  const res = await callWorker({ password: pw, command: { type:'open_tab', url, fetchNow: true, summarizeAfter: true, words: 80 } });
-  if(res.error) appendMsg('Error', res.error);
-  else{
-    appendMsg('System', `Opened tab ${res.tab.id}`);
-    renderTabs(res.tabs);
-    renderConsole(res.console);
-  }
+  const res = await callWorker({ password: pw, command: { type:'open_tab', url, fetchNow: true, summarizeAfter: true, words: 100 } });
+  if (res.error) { appendMsg('Error', res.error); return; }
+  appendMsg('System', `Opened tab ${res.tab.id} (${res.tab.finalUrl || res.tab.url})`);
+  renderTabs(res.tabs);
+  renderConsole(res.console);
 };
 
 refreshTabsBtn.onclick = async () => {
   const pw = pwEl.value;
   if(!pw){ alert('Password required'); return; }
   const res = await callWorker({ password: pw, command: { type:'list_tabs' } });
-  if(res.tabs) renderTabs(res.tabs);
-  if(res.console) renderConsole(res.console);
+  if (res.error) { appendMsg('Error', res.error); return; }
+  if (res.tabs) renderTabs(res.tabs);
+  if (res.console) renderConsole(res.console);
 };
 
-function renderTabs(tabs){
+function renderTabs(tabs) {
   tabsList.innerHTML = '';
-  for(const t of tabs){
+  for (const t of tabs.slice().reverse()) {
     const div = document.createElement('div');
-    div.className='tab';
-    div.innerHTML = `<div><input type="radio" name="tab" value="${t.id}" ${t.id===selectedTabId?'checked':''}/> <b>${escapeHtml(t.title||t.url)}</b></div>
-      <div class="small">${escapeHtml(t.url)}</div>
-      <div class="small">status: ${t.status} lastFetched: ${t.lastFetchedAt||'n/a'}</div>`;
+    div.className = 'tab';
+    div.innerHTML = `
+      <div class="tab-id">${escapeHtml(t.id)}</div>
+      <div style="font-weight:600">${escapeHtml(t.title || t.finalUrl || t.url)}</div>
+      <div class="small">${escapeHtml(t.finalUrl || t.url)}</div>
+      <div class="small">status: ${escapeHtml(t.status)} lastFetched: ${escapeHtml(t.lastFetchedAt || 'n/a')}</div>
+    `;
+    div.onclick = () => {
+      selectedTabId = t.id;
+      // highlight selection
+      Array.from(tabsList.querySelectorAll('.tab')).forEach(el => el.style.outline = '');
+      div.style.outline = '2px solid #2b6';
+    };
     tabsList.appendChild(div);
   }
-  // attach radio click listeners
-  Array.from(tabsList.querySelectorAll('input[name="tab"]')).forEach(i=>i.onclick=()=>{ selectedTabId = i.value; });
 }
 
 fetchTabBtn.onclick = async () => {
-  if(!selectedTabId){ alert('Select a tab from the right'); return; }
-  const pw = pwEl.value; if(!pw){ alert('Password needed'); return; }
-  const res = await callWorker({ password: pw, command: { type:'fetch_tab', tabId: selectedTabId }});
-  if(res.tabs) renderTabs(res.tabs);
-  if(res.console) renderConsole(res.console);
-  appendMsg('System', `Fetch requested for ${selectedTabId}`);
+  if(!selectedTabId) { alert('Select a tab'); return; }
+  const pw = pwEl.value; if(!pw) { alert('Password required'); return; }
+  const res = await callWorker({ password: pw, command: { type:'fetch_tab', tabId: selectedTabId } });
+  if (res.error) { appendMsg('Error', res.error); return; }
+  if (res.tab) appendMsg('System', `Fetched ${res.tab.id} (${res.tab.finalUrl || res.tab.url})`); 
+  if (res.tabs) renderTabs(res.tabs);
+  if (res.console) renderConsole(res.console);
 };
 
 summTabBtn.onclick = async () => {
-  if(!selectedTabId){ alert('Select a tab'); return; }
-  const pw = pwEl.value; if(!pw){ alert('Password needed'); return; }
+  if(!selectedTabId) { alert('Select a tab'); return; }
+  const pw = pwEl.value; if(!pw) { alert('Password required'); return; }
   const res = await callWorker({ password: pw, command: { type:'summarize_tab', tabId: selectedTabId, words: 120 }});
-  if(res.result) appendMsg('System', `Summary: ${res.result.summary}`);
-  if(res.tabs) renderTabs(res.tabs);
-  if(res.console) renderConsole(res.console);
+  if (res.error) { appendMsg('Error', res.error); return; }
+  if (res.result) appendMsg('System', `Summary for ${selectedTabId}: ${res.result.summary}`);
+  if (res.tabs) renderTabs(res.tabs);
+  if (res.console) renderConsole(res.console);
 };
 
 closeTabBtn.onclick = async () => {
-  if(!selectedTabId){ alert('Select a tab'); return; }
-  const pw = pwEl.value; if(!pw){ alert('Password needed'); return; }
+  if(!selectedTabId) { alert('Select a tab'); return; }
+  const pw = pwEl.value; if(!pw) { alert('Password required'); return; }
   const res = await callWorker({ password: pw, command: { type:'close_tab', tabId: selectedTabId }});
-  if(res.tabs) renderTabs(res.tabs);
-  if(res.console) renderConsole(res.console);
+  if (res.error) { appendMsg('Error', res.error); return; }
   appendMsg('System', `Closed ${selectedTabId}`);
+  selectedTabId = null;
+  if (res.tabs) renderTabs(res.tabs);
+  if (res.console) renderConsole(res.console);
 };
 
-function renderConsole(entries){
+function renderConsole(entries) {
   consoleDiv.innerHTML = '';
-  for(const e of entries.slice(-200).reverse()){
+  for (const e of entries.slice(-200).reverse()) {
     const line = document.createElement('div');
-    line.innerHTML = `<span class="small">[${e.ts}]</span> <b>${escapeHtml(e.level)}</b> ${escapeHtml(e.msg)}`;
+    line.innerHTML = `<span class="small">[${escapeHtml(e.ts)}]</span> <b>${escapeHtml(e.level)}</b> ${escapeHtml(e.msg)}`;
     consoleDiv.appendChild(line);
   }
   consoleDiv.scrollTop = consoleDiv.scrollHeight;
 }
 
 // initial load
-(async ()=>{ const res = await callWorker({ password: pwEl.value || "", command: { type:'list_tabs' } }); if(res.tabs) renderTabs(res.tabs); if(res.console) renderConsole(res.console); })();
+(async ()=> {
+  const res = await callWorker({ password: pwEl.value||"", command: { type:'list_tabs' } });
+  if (res && res.tabs) renderTabs(res.tabs);
+  if (res && res.console) renderConsole(res.console);
+})();
 </script>
 </body>
 </html>
