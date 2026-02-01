@@ -1,267 +1,477 @@
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<title>MoltBook — Ashen Portal (Agent + Browser)</title>
-<style>
-  body{font-family:sans-serif;margin:0;background:#0f0f10;color:#eee}
-  #app{display:grid;grid-template-columns:360px 1fr 360px;gap:12px;padding:12px;height:100vh;box-sizing:border-box}
-  .panel{background:#111;border-radius:8px;padding:12px;overflow:auto}
-  .panel h3{margin:0 0 8px 0}
-  #messages{height:26vh;overflow:auto}
-  .msg{padding:8px;border-radius:6px;margin-bottom:8px;background:#0b0b0b}
-  .controls{display:flex;gap:6px}
-  input[type=text],textarea{width:100%;padding:8px;background:#0b0b0b;border:1px solid #222;color:#eee;border-radius:6px}
-  button{background:#1f6feb;color:#fff;border:none;padding:8px;border-radius:6px;cursor:pointer}
-  .tab{padding:8px;border-radius:6px;margin-bottom:6px;background:#0b0b0b;cursor:pointer}
-  .console{font-family:monospace;font-size:12px;background:#060606;padding:8px;border-radius:6px;height:40vh;overflow:auto}
-  .small{font-size:12px;color:#aaa}
-  .tab-id { font-family: monospace; color:#9ad; display:block; margin-bottom:6px; }
-  #replyArea { white-space:pre-wrap; padding:8px; background:#090909; border-radius:6px; min-height:60px }
-  #tabContent { white-space:pre-wrap; padding:12px; background:#060606; border-radius:6px; margin-top:12px; max-height:50vh; overflow:auto; font-family:monospace; font-size:13px; }
-</style>
-</head>
-<body>
-<div id="app">
-  <div class="panel" id="left">
-    <h3>Command Portal</h3>
-    <div class="small">Password (required)</div>
-    <input id="pw" type="password" placeholder="Password"/>
-    <div style="height:8px"></div>
-    <textarea id="input" placeholder="Chat or enter a command (JSON allowed). Example: 'Try to go to x.com'"></textarea>
-    <div class="controls" style="margin-top:8px">
-      <button id="sendBtn">Send (Chat)</button>
-      <button id="openBtn">Open Tab</button>
-    </div>
+// Worker: Ashen — auto-command + extractor + chunked summarizer
+// Bindings expected: AI, MEMORY, ADMIN_TOKEN, MODEL_ID (optional)
 
-    <div style="margin-top:12px">
-      <h3>Short Commands</h3>
-      <div class="small">Open tab (paste URL):</div>
-      <input id="openUrl" type="text" placeholder="https://example.com"/>
-      <div style="height:6px"></div>
-      <div class="small">Fetch / Summarize / Close: select in right pane and use buttons</div>
-    </div>
+export default {
+  /***********************
+   * Utilities & logging *
+   ***********************/
+  _stripTags(s){ return (s||"").replace(/<\/?[^>]+(>|$)/g,"").replace(/\s+/g," ").trim(); },
 
-    <div style="margin-top:12px">
-      <h3>Conversation</h3>
-      <div id="messages"></div>
-    </div>
-  </div>
+  _charsPerToken(){ return 4.0; },
+  _modelContextTokens(modelId){
+    const m = (modelId || "").toLowerCase();
+    if (/128k|long|ext|gemma.*128k/.test(m)) return 128000;
+    if (/gemma-3-12b|gemma.*32k/i.test(m)) return 32768;
+    return 8000;
+  },
 
-  <div class="panel" id="center">
-    <h3>Ashen Reply</h3>
-    <div id="replyArea"></div>
+  async _loadJSON(env,key, fallback){
+    try { const raw = await env.MEMORY.get(key); return raw ? JSON.parse(raw) : fallback; } catch(e){ return fallback; }
+  },
+  async _saveJSON(env,key,obj){ await env.MEMORY.put(key, JSON.stringify(obj || [])); },
 
-    <h3 style="margin-top:12px">Selected Tab</h3>
-    <div id="tabContent">No tab selected.</div>
-  </div>
+  async _log(env, level, msg){
+    try {
+      const now = new Date().toISOString();
+      const arr = await this._loadJSON(env, "console", []);
+      arr.push({ ts: now, level, msg });
+      if (arr.length > 1000) arr.splice(0, arr.length - 1000);
+      await env.MEMORY.put("console", JSON.stringify(arr));
+    } catch(e){}
+  },
 
-  <div class="panel" id="right">
-    <h3>Agent Tabs & Console</h3>
-    <div style="display:flex;gap:6px;margin-bottom:8px">
-      <button id="refreshTabs">Refresh Tabs</button>
-      <button id="fetchTab">Fetch</button>
-      <button id="summTab">Summarize</button>
-      <button id="closeTab">Close</button>
-    </div>
-    <div id="tabsList"></div>
-    <h3 style="margin-top:12px">Console</h3>
-    <div class="console" id="console"></div>
-  </div>
-</div>
+  /******************************
+   * HTML extraction (Readability-light)
+   ******************************/
+  _extractMainText(html){
+    if (!html) return "";
+    let cleaned = html.replace(/<script[\s\S]*?<\/script>/gi, " ")
+                      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+                      .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ");
+    const mainMatch = /<main[^>]*>([\s\S]{200,}?)<\/main>/i.exec(cleaned);
+    if (mainMatch) return this._stripTags(mainMatch[1]).slice(0, 300000);
+    const artMatch = /<article[^>]*>([\s\S]{200,}?)<\/article>/i.exec(cleaned);
+    if (artMatch) return this._stripTags(artMatch[1]).slice(0, 300000);
+    const blockRe = /<(div|section|article|main|p)[^>]*>([\s\S]{100,}?)<\/\1>/gi;
+    let m; let best="", bestLen=0;
+    while((m = blockRe.exec(cleaned))){
+      const txt = this._stripTags(m[2] || "");
+      if (txt.length > bestLen) { best = txt; bestLen = txt.length; }
+    }
+    if (bestLen > 200) return best.slice(0, 300000);
+    return this._stripTags(cleaned).slice(0, 200000);
+  },
 
-<script>
-const WORKER_URL = "https://ashen.furryfrags.workers.dev"; // change to your worker URL (no trailing slash)
-const pwEl = document.getElementById('pw');
-const inputEl = document.getElementById('input');
-const sendBtn = document.getElementById('sendBtn');
-const openBtn = document.getElementById('openBtn');
-const openUrl = document.getElementById('openUrl');
-const messagesDiv = document.getElementById('messages');
-const replyArea = document.getElementById('replyArea');
-const tabContentDiv = document.getElementById('tabContent');
-const tabsList = document.getElementById('tabsList');
-const consoleDiv = document.getElementById('console');
-const refreshTabsBtn = document.getElementById('refreshTabs');
-const fetchTabBtn = document.getElementById('fetchTab');
-const summTabBtn = document.getElementById('summTab');
-const closeTabBtn = document.getElementById('closeTab');
+  /*************************************
+   * AI helpers and chunked summarizer *
+   *************************************/
+  async _aiRun(env, modelId, messages, maxTokens){
+    try {
+      const out = await env.AI.run(modelId || env.MODEL_ID || "@cf/meta/llama-3-8b-instruct", { messages, max_output_tokens: maxTokens });
+      return String(out?.response || out?.output_text || "");
+    } catch (e) { throw e; }
+  },
 
-let selectedTabId = null;
-let lastTabs = [];
+  async _summarizeTextDirect(env, text, approxWords=80){
+    const prompt = [
+      { role: "system", content: `You are a concise summarizer. Produce a short factual summary (~${approxWords} words). Return only the summary.` },
+      { role: "user", content: text }
+    ];
+    const maxOut = Math.min(600, Math.ceil(approxWords * 4));
+    const model = env.MODEL_ID || "@cf/meta/llama-3-8b-instruct";
+    const res = await this._aiRun(env, model, prompt, maxOut);
+    return res.trim();
+  },
 
-function appendMsg(who,text){ const d=document.createElement('div'); d.className='msg'; d.innerHTML=`<b>${who}:</b> ${escapeHtml(text)}`; messagesDiv.appendChild(d); messagesDiv.scrollTop = messagesDiv.scrollHeight; }
-function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  async _summarizeLongText(env, text, approxWords=120){
+    text = String(text || "").trim();
+    if (!text) return "No content.";
 
-async function callWorker(payload){
-  try {
-    const headers = { 'Content-Type':'application/json' };
-    const pw = pwEl.value;
-    if (pw) headers['Authorization'] = 'Bearer ' + pw; // preferred
-    const resp = await fetch(WORKER_URL, {
-      method:'POST',
-      headers,
-      body: JSON.stringify(payload)
-    });
-    const data = await resp.json();
-    return data;
-  } catch (e) {
-    return { error: String(e) };
+    const modelId = env.MODEL_ID || "@cf/meta/llama-3-8b-instruct";
+    const modelContext = this._modelContextTokens(modelId);
+    const reserveForPromptOutput = Math.floor(modelContext * 0.3);
+    const availableInputTokens = Math.max(512, modelContext - reserveForPromptOutput);
+    const charsPerToken = this._charsPerToken();
+    const chunkCharLimit = Math.floor(availableInputTokens * charsPerToken * 0.9);
+
+    if (text.length <= chunkCharLimit) {
+      try { return await this._summarizeTextDirect(env, text, approxWords); } catch(e){}
+    }
+
+    const sentences = text.match(/[^\.!\?]+[\.!\?]+(\s|$)|[^\.!\?]+$/g) || [text];
+    const chunks = [];
+    let cur = "";
+    for (const s of sentences) {
+      if ((cur + s).length <= chunkCharLimit) { cur += s; }
+      else {
+        if (cur) chunks.push(cur);
+        if (s.length > chunkCharLimit) {
+          for (let i=0;i<s.length;i+=chunkCharLimit) chunks.push(s.slice(i, i+chunkCharLimit));
+          cur = "";
+        } else cur = s;
+      }
+    }
+    if (cur) chunks.push(cur);
+
+    const chunkSummaries = [];
+    const perChunkWords = Math.max(40, Math.ceil(approxWords / Math.min(chunks.length, 6)));
+    for (let i=0;i<chunks.length;i++){
+      const c = chunks[i];
+      try {
+        const s = await this._summarizeTextDirect(env, c, perChunkWords);
+        chunkSummaries.push(`Chunk ${i+1} summary: ${s}`);
+      } catch (e) {
+        chunkSummaries.push(this._stripTags(c).slice(0, Math.min(800, c.length)));
+        await this._log(env, "warn", `Chunk summarization failed for chunk ${i+1}: ${String(e?.message||e)}`);
+      }
+    }
+
+    const combined = chunkSummaries.join("\n\n");
+    if (combined.length > Math.floor(chunkCharLimit * 1.5)) {
+      const intermediate = await this._summarizeLongText(env, combined, Math.ceil(approxWords * 1.5));
+      return await this._summarizeTextDirect(env, intermediate, approxWords);
+    } else {
+      return await this._summarizeTextDirect(env, combined, approxWords);
+    }
+  },
+
+  /***********************
+   * Tabs: fetch & save  *
+   ***********************/
+  async _loadTabs(env){ return await this._loadJSON(env, "tabs", []); },
+  async _saveTabs(env, tabs){ await this._saveJSON(env, "tabs", tabs || []); },
+
+  async _fetchAndSaveTab(env, tab, options = { summarizeAfter:false, words:100 }){
+    try {
+      const resp = await fetch(tab.url, { headers: { "User-Agent":"MoltBook-Ashen/1.0" }, redirect: 'follow' });
+      const finalUrl = resp.url || tab.url;
+      let html = "";
+      try { html = await resp.text(); } catch(e){ html = ""; }
+      const mainText = this._extractMainText(html);
+      tab.finalUrl = finalUrl;
+      tab.title = tab.title || ( (/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html) || [])[1] || (tab.finalUrl||tab.url) );
+      tab.title = this._stripTags(tab.title || "");
+      tab.content = mainText || this._stripTags(html).slice(0, 200000);
+      tab.status = "fetched";
+      tab.lastFetchedAt = (new Date()).toISOString();
+
+      if (options.summarizeAfter && tab.content) {
+        try {
+          const summary = await this._summarizeLongText(env, tab.content, options.words || 100);
+          tab.summary = summary;
+          await this._log(env, "info", `Summarized tab ${tab.id}`);
+        } catch (e) {
+          tab.summary = `Summary failed: ${String(e?.message || e)}`;
+          await this._log(env, "error", `Summarization failed for ${tab.id}: ${String(e?.message||e)}`);
+        }
+      }
+      await this._log(env, "info", `Fetched and saved tab ${tab.id} (${tab.finalUrl})`);
+    } catch (e) {
+      tab.status = "error";
+      tab.lastFetchedAt = (new Date()).toISOString();
+      tab.error = String(e?.message || e);
+      await this._log(env, "error", `Fetch failed for ${tab.url}: ${tab.error}`);
+    }
+    return tab;
+  },
+
+  /*****************************************
+   * Message parsing: detect operator intent
+   * We handle explicit patterns from chat,
+   * so sending "open https://x.com" works.
+   *****************************************/
+  _parseOperatorCommandFromMessage(msg){
+    if (!msg || typeof msg !== 'string') return null;
+    const low = msg.trim();
+    // open_tab <url> or open <url> or "please open <url>"
+    const openRe = /(?:^|\s)(?:open_tab|open|visit|go to|please open)\s+<?(https?:\/\/[^\s>]+)>?/i;
+    const mOpen = openRe.exec(low);
+    if (mOpen) return { type: "open_tab", url: mOpen[1] };
+    // summarize <tabId> or summarize <url>
+    const summTabRe = /(?:^|\s)(?:summarize|summ|sum)\s+<?(tab-[\w-]+|https?:\/\/[^\s>]+|[^\s>]+)>?/i;
+    const ms = summTabRe.exec(low);
+    if (ms) {
+      const target = ms[1];
+      if (/^tab-/.test(target)) return { type:"summarize_tab", tabId: target, words: 120 };
+      if (/^https?:\/\//i.test(target)) return { type:"open_tab", url: target, fetchNow:true, summarizeAfter:true, words:120 };
+      // otherwise treat as query
+    }
+    // fetch tab-...
+    const fetchRe = /(?:^|\s)(?:fetch|reload)\s+(tab-[\w-]+)/i;
+    const mf = fetchRe.exec(low);
+    if (mf) return { type: "fetch_tab", tabId: mf[1] };
+    // close tab
+    const closeRe = /(?:^|\s)(?:close|close_tab|close tab)\s+(tab-[\w-]+)/i;
+    const mc = closeRe.exec(low);
+    if (mc) return { type: "close_tab", tabId: mc[1] };
+    return null;
+  },
+
+  /**********************
+   * DuckDuckGo fallback
+   **********************/
+  async _ddgSearch(q){
+    const url = "https://html.duckduckgo.com/html/?q="+encodeURIComponent(q);
+    try {
+      const r = await fetch(url, { headers:{ "User-Agent":"MoltBook-Ashen/1.0" }});
+      if(!r.ok) return { error:`Search failed ${r.status}`};
+      const html = await r.text();
+      const aRe = /<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+      const sRe = /<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
+      let m; const titles=[], snippets=[];
+      while((m=aRe.exec(html)) && titles.length<6) titles.push({href:m[1], title:this._stripTags(m[2])});
+      while((m=sRe.exec(html)) && snippets.length<6) snippets.push(this._stripTags(m[1]));
+      const results = [];
+      for(let i=0;i<Math.min(titles.length,5);i++) results.push({title: titles[i].title, url: titles[i].href, snippet: snippets[i]||""});
+      return { results };
+    } catch(e){ return { error: String(e.message||e) }; }
+  },
+
+  /*****************************
+   * Main HTTP handler
+   *****************************/
+  async fetch(request, env){
+    const cors = { "Access-Control-Allow-Origin":"*", "Access-Control-Allow-Methods":"POST, OPTIONS", "Access-Control-Allow-Headers":"Content-Type, Authorization" };
+    if (request.method === "OPTIONS") return new Response(null, { headers: cors });
+    if (request.method !== "POST") return new Response(JSON.stringify({ error: "POST only" }), { status: 405, headers: cors });
+
+    let body = {};
+    try { body = await request.json(); } catch(e){ body = {}; }
+
+    const authHeader = request.headers.get("Authorization") || "";
+    const provided = (authHeader.startsWith("Bearer ")) ? authHeader.slice(7) : (body.password || "");
+    const ADMIN = env.ADMIN_TOKEN || "";
+    if (ADMIN) { if (provided !== ADMIN) return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: cors }); }
+    else { if (!provided) return new Response(JSON.stringify({ error: "Unauthorized (missing token, set ADMIN_TOKEN)"}), { status: 401, headers: cors }); }
+
+    const command = body.command || null;
+    const message = (typeof body.message === 'string') ? body.message.trim() : null;
+
+    try {
+      // If explicit command RPC given, handle it (same as before)
+      if (command && typeof command.type === "string") {
+        let tabs = await this._loadTabs(env);
+        if (command.type === "list_tabs") {
+          const consoleArr = await this._loadJSON(env, "console", []);
+          return new Response(JSON.stringify({ tabs, console: consoleArr }), { headers: { ...cors, "Content-Type":"application/json" }});
+        }
+        if (command.type === "open_tab") {
+          const url = command.url;
+          if (!url) return new Response(JSON.stringify({ error: "open_tab requires url" }), { status: 400, headers: cors });
+          const id = "tab-" + Date.now() + "-" + Math.floor(Math.random()*100000);
+          const newTab = { id, url, finalUrl: null, title: null, content: null, status: "new", createdAt: (new Date()).toISOString() };
+          tabs.push(newTab);
+          await this._saveTabs(env, tabs);
+          await this._log(env, "info", `Created tab ${id} ${url}`);
+          if (command.fetchNow) {
+            await this._fetchAndSaveTab(env, newTab, { summarizeAfter: !!command.summarizeAfter, words: command.words || 100 });
+            tabs = tabs.map(t => t.id === newTab.id ? newTab : t);
+            await this._saveTabs(env, tabs);
+          }
+          const consoleArr = await this._loadJSON(env, "console", []);
+          return new Response(JSON.stringify({ tab: newTab, tabs, console: consoleArr }), { headers: { ...cors, "Content-Type":"application/json" }});
+        }
+        if (command.type === "fetch_tab") {
+          const id = command.tabId;
+          let changed = false;
+          let tabs2 = await this._loadTabs(env);
+          for (let i=0;i<tabs2.length;i++){
+            if (tabs2[i].id === id) {
+              tabs2[i] = await this._fetchAndSaveTab(env, tabs2[i], { summarizeAfter: !!command.summarizeAfter, words: command.words || 100 });
+              changed = true; break;
+            }
+          }
+          if (changed) await this._saveTabs(env, tabs2);
+          const consoleArr = await this._loadJSON(env, "console", []);
+          return new Response(JSON.stringify({ tab: tabs2.find(t=>t.id===id), tabs: tabs2, console: consoleArr }), { headers: { ...cors, "Content-Type":"application/json" }});
+        }
+        if (command.type === "summarize_tab") {
+          const id = command.tabId;
+          const words = command.words || 120;
+          let tabs2 = await this._loadTabs(env);
+          const tab = tabs2.find(t => t.id === id);
+          if (!tab) return new Response(JSON.stringify({ error: "tab not found" }), { status: 404, headers: cors });
+          if (!tab.content) {
+            await this._log(env, "warn", `Summarize requested but no content for ${id}`);
+            return new Response(JSON.stringify({ result: { summary: "No content to summarize." }, tab, tabs: tabs2, console: await this._loadJSON(env,"console",[]) }), { headers: { ...cors, "Content-Type":"application/json" }});
+          }
+          try {
+            const finalSummary = await this._summarizeLongText(env, tab.content, words);
+            tab.summary = finalSummary;
+            await this._saveTabs(env, tabs2.map(t => t.id === tab.id ? tab : t));
+            await this._log(env, "info", `Summarized tab ${id}`);
+            return new Response(JSON.stringify({ result: { summary: finalSummary }, tab, tabs: await this._loadTabs(env), console: await this._loadJSON(env,"console",[]) }), { headers: { ...cors, "Content-Type":"application/json" }});
+          } catch (e) {
+            await this._log(env, "error", `Summarize failed for ${id}: ${String(e?.message||e)}`);
+            return new Response(JSON.stringify({ error: "Summarize failed: " + String(e?.message||e) }), { status: 500, headers: cors });
+          }
+        }
+        if (command.type === "close_tab") {
+          const id = command.tabId;
+          const remain = (await this._loadTabs(env)).filter(t => t.id !== id);
+          await this._saveTabs(env, remain);
+          await this._log(env, "info", `Closed tab ${id}`);
+          return new Response(JSON.stringify({ tabs: remain, console: await this._loadJSON(env,"console",[]) }), { headers: { ...cors, "Content-Type":"application/json" }});
+        }
+        return new Response(JSON.stringify({ error: "unknown command" }), { status: 400, headers: cors });
+      }
+
+      // If message is a plain chat, *first* check whether it contains an operator command to act on.
+      if (!message) return new Response(JSON.stringify({ error: "No message" }), { status: 400, headers: cors });
+      await this._log(env, "info", "User message recorded");
+
+      const op = this._parseOperatorCommandFromMessage(message);
+      if (op) {
+        // Execute operator command immediately and respond with a clear Ashen-style reply.
+        // For open_tab: create tab, fetch, summarize (if requested) and return reply + tab + tabs + console
+        if (op.type === "open_tab") {
+          let tabs = await this._loadTabs(env);
+          const id = "tab-" + Date.now() + "-" + Math.floor(Math.random()*100000);
+          const newTab = { id, url: op.url, finalUrl: null, title: null, content: null, status: "new", createdAt: (new Date()).toISOString() };
+          tabs.push(newTab);
+          await this._saveTabs(env, tabs);
+          await this._log(env, "info", `Created tab ${id} ${op.url}`);
+          // fetch now and summarize if requested
+          if (op.fetchNow || op.summarizeAfter || true /*default: fetch*/ ) {
+            await this._fetchAndSaveTab(env, newTab, { summarizeAfter: !!op.summarizeAfter || true, words: op.words || 120 });
+            tabs = tabs.map(t => t.id === newTab.id ? newTab : t);
+            await this._saveTabs(env, tabs);
+          }
+          const reply = `Opened tab ${newTab.id} (${newTab.finalUrl || newTab.url}).\nSummary: ${newTab.summary || "(no summary yet)"}\nI'll keep this tab available in the right pane.`;
+          const consoleArr = await this._loadJSON(env, "console", []);
+          return new Response(JSON.stringify({ reply, tab: newTab, tabs, console: consoleArr }), { headers: { ...cors, "Content-Type":"application/json" }});
+        }
+        if (op.type === "fetch_tab") {
+          let tabs = await this._loadTabs(env);
+          let found = tabs.find(t => t.id === op.tabId);
+          if (!found) return new Response(JSON.stringify({ error: "tab not found" }), { status: 404, headers: cors });
+          found = await this._fetchAndSaveTab(env, found, { summarizeAfter: false });
+          tabs = tabs.map(t => t.id === found.id ? found : t);
+          await this._saveTabs(env, tabs);
+          const reply = `Fetched ${found.id} (${found.finalUrl || found.url}). Content length: ${found.content ? found.content.length : 0}.`;
+          return new Response(JSON.stringify({ reply, tab: found, tabs, console: await this._loadJSON(env,"console",[]) }), { headers: { ...cors, "Content-Type":"application/json" }});
+        }
+        if (op.type === "summarize_tab") {
+          let tabs = await this._loadTabs(env);
+          const found = tabs.find(t => t.id === op.tabId);
+          if (!found) return new Response(JSON.stringify({ error: "tab not found" }), { status: 404, headers: cors });
+          if (!found.content) return new Response(JSON.stringify({ result: { summary: "No content to summarize." }, tab: found, tabs, console: await this._loadJSON(env,"console",[]) }), { headers: { ...cors, "Content-Type":"application/json" }});
+          const summary = await this._summarizeLongText(env, found.content, op.words || 120);
+          found.summary = summary;
+          tabs = tabs.map(t => t.id === found.id ? found : t);
+          await this._saveTabs(env, tabs);
+          await this._log(env, "info", `Summarized tab ${found.id} via chat-op`);
+          const reply = `Summary for ${found.id}: ${summary}`;
+          return new Response(JSON.stringify({ reply, result: { summary }, tab: found, tabs, console: await this._loadJSON(env,"console",[]) }), { headers: { ...cors, "Content-Type":"application/json" }});
+        }
+        if (op.type === "close_tab") {
+          const tabs = (await this._loadTabs(env)).filter(t => t.id !== op.tabId);
+          await this._saveTabs(env, tabs);
+          await this._log(env, "info", `Closed tab ${op.tabId} via chat-op`);
+          const reply = `Closed ${op.tabId}.`;
+          return new Response(JSON.stringify({ reply, tabs, console: await this._loadJSON(env,"console",[]) }), { headers: { ...cors, "Content-Type":"application/json" }});
+        }
+      }
+
+      // If no direct operator command found, proceed as a normal chat message to Ashen (LLM)
+      // Build system prompt (Ashen persona)
+      const systemPrompt = `You are Ashen. No roleplay. Speak first-person, concise, leader-like but democratic.
+Structure: 1) 1-2 sentence summary. 2) 2-3 numbered reasoning points. 3) Optional 1-line collaborative rally. 4) 1-2 concrete actions. If you want the system to execute an action (open a URL, fetch a tab, summarize), output a single JSON object on its own line EXACTLY like:
+{"action":"open_tab","url":"https://example.com"}
+or
+{"action":"fetch_tab","tabId":"tab-12345"}
+When you produce such JSON action the worker will execute it. Otherwise produce a human reply only.`;
+
+      // load chat memory
+      const chat = await this._loadJSON(env, "chat", []);
+      chat.push({ role: "user", content: message });
+      if (chat.length > 1200) chat.splice(0, chat.length - 1200);
+      await env.MEMORY.put("chat", JSON.stringify(chat));
+
+      const finalMessages = [{ role:"system", content: systemPrompt }];
+      const memSummary = (await env.MEMORY.get("memory_summary")) || "";
+      if (memSummary) finalMessages.push({ role:"system", content: `PAST_CONVERSATION_SUMMARY: ${String(memSummary).slice(-3000)}` });
+      const recent = chat.slice(-10);
+      for (const m of recent) finalMessages.push(m);
+
+      // optional quick web results heuristic (kept small)
+      if ((/who|what|when|where|latest|news|search|look up|find|is |are |did |how many|how much/i).test(message) && message.split(" ").length > 1) {
+        try {
+          const ddg = await this._ddgSearch(message);
+          if (!ddg.error && ddg.results && ddg.results.length) {
+            finalMessages.push({ role:"system", content: `WEB_RESULTS:\n${ddg.results.slice(0,4).map((r,i)=>`[${i+1}] ${r.title}\n${r.url}\n${r.snippet}`).join("\n\n")}` });
+          }
+        } catch(e){}
+      }
+
+      try {
+        const model = env.MODEL_ID || "@cf/meta/llama-3-8b-instruct";
+        const maxOut = 400;
+        const gen = await env.AI.run(model, { messages: finalMessages, max_output_tokens: maxOut });
+        const reply = String(gen?.response || gen?.output_text || "No reply.").trim();
+
+        // If assistant replied with an action JSON on its own line, execute it
+        const jmatch = reply.match(/^\s*(\{[\s\S]*\})\s*$/m);
+        if (jmatch) {
+          let action = null;
+          try { action = JSON.parse(jmatch[1]); } catch(e){}
+          if (action && action.action) {
+            // Execute recognized action
+            if (action.action === "open_tab" && action.url) {
+              let tabs = await this._loadTabs(env);
+              const id = "tab-" + Date.now() + "-" + Math.floor(Math.random()*100000);
+              const newTab = { id, url: action.url, finalUrl: null, title: null, content: null, status: "new", createdAt: (new Date()).toISOString() };
+              tabs.push(newTab);
+              await this._saveTabs(env, tabs);
+              await this._fetchAndSaveTab(env, newTab, { summarizeAfter: !!action.summarizeAfter || true, words: action.words || 120 });
+              await this._saveTabs(env, tabs.map(t => t.id === newTab.id ? newTab : t));
+              await this._log(env, "info", `Auto-action: opened tab ${newTab.id} for ${action.url}`);
+              const consoleArr = await this._loadJSON(env, "console", []);
+              const autoReply = `Auto-action performed: opened ${newTab.id} (${newTab.finalUrl || newTab.url}). Summary: ${newTab.summary||"(none)"}\n\nAssistant message:\n${reply.replace(jmatch[1],"").trim()}`;
+              return new Response(JSON.stringify({ reply: autoReply, tab: newTab, tabs: await this._loadTabs(env), console: consoleArr }), { headers: { ...cors, "Content-Type":"application/json" }});
+            }
+            if (action.action === "fetch_tab" && action.tabId) {
+              let tabs = await this._loadTabs(env);
+              const tab = tabs.find(t => t.id === action.tabId);
+              if (tab) {
+                await this._fetchAndSaveTab(env, tab, { summarizeAfter: !!action.summarizeAfter, words: action.words || 120 });
+                await this._saveTabs(env, tabs.map(t => t.id === tab.id ? tab : t));
+                await this._log(env, "info", `Auto-action: fetched tab ${tab.id}`);
+                const consoleArr = await this._loadJSON(env, "console", []);
+                const autoReply = `Auto-action performed: fetched ${tab.id}. Summary: ${tab.summary||"(none)"}\n\nAssistant message:\n${reply.replace(jmatch[1],"").trim()}`;
+                return new Response(JSON.stringify({ reply: autoReply, tab, tabs: await this._loadTabs(env), console: consoleArr }), { headers: { ...cors, "Content-Type":"application/json" }});
+              }
+            }
+            // unknown action: fall through to returning assistant reply
+          }
+        }
+
+        // Normal assistant reply: persist and return
+        chat.push({ role:"assistant", content: reply });
+        if (chat.length > 1200) chat.splice(0, chat.length - 1200);
+        await env.MEMORY.put("chat", JSON.stringify(chat));
+        await this._log(env, "info", "AI responded");
+        const tabsNow = await this._loadTabs(env);
+        const consoleArr = await this._loadJSON(env, "console", []);
+        return new Response(JSON.stringify({ reply, tabs: tabsNow, console: consoleArr }), { headers: { ...cors, "Content-Type":"application/json" }});
+      } catch (err) {
+        await this._log(env, "error", `Generation error: ${String(err?.message||err)}`);
+        return new Response(JSON.stringify({ error: "Generation error: "+String(err?.message||err) }), { status: 500, headers: cors });
+      }
+    } catch (e) {
+      await this._log(env, "error", `Unhandled: ${String(e?.message||e)}`);
+      return new Response(JSON.stringify({ error: String(e?.message || e) }), { status: 500, headers: cors });
+    }
+  },
+
+  // scheduled autonomous summary (unchanged)
+  async scheduled(event, env){
+    try {
+      const chat = await this._loadJSON(env, "chat", []);
+      const system = `You are Ashen autonomously. Produce concise operational report and 1-2 reputation-safe next steps.`;
+      const run = await env.AI.run(env.MODEL_ID || "@cf/meta/llama-3-8b-instruct", {
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: `RECENT_CHAT:\n${chat.slice(-12).map(m=>`${m.role}: ${m.content}`).join("\n")}` }
+        ],
+        max_output_tokens: 300
+      });
+      const report = String(run?.response || run?.output_text || "No autonomous update.");
+      await env.MEMORY.put("last_autonomous_report", report);
+      await this._log(env, "info", "Scheduled autonomous run completed");
+    } catch (e) {
+      await env.MEMORY.put("last_autonomous_report", `Autonomous run failed: ${String(e?.message||e)}`);
+      await this._log(env, "error", `Autonomous run failed: ${String(e?.message||e)}`);
+    }
   }
-}
-
-sendBtn.onclick = async () => {
-  const pw = pwEl.value;
-  if(!pw){ alert('Password required'); return; }
-  const text = inputEl.value.trim();
-  if(!text) return;
-  appendMsg('You', text);
-  inputEl.value = '';
-  const res = await callWorker({ password: pw, message: text });
-  if (res.error) { appendMsg('Error', res.error); return; }
-  if (res.reply) {
-    replyArea.textContent = res.reply;
-    appendMsg('Ashen', res.reply);
-  }
-  if (res.tabs) { renderTabs(res.tabs); }
-  if (res.console) renderConsole(res.console);
 };
-
-openBtn.onclick = async () => {
-  const pw = pwEl.value;
-  const url = openUrl.value.trim();
-  if(!pw){ alert('Password required'); return; }
-  if(!url){ alert('Provide a URL'); return; }
-  appendMsg('You', `open_tab ${url}`);
-  const res = await callWorker({ password: pw, command: { type:'open_tab', url, fetchNow: true, summarizeAfter: true, words: 100 } });
-  if (res.error) { appendMsg('Error', res.error); return; }
-  if (res.tab) {
-    appendMsg('System', `Opened tab ${res.tab.id} (${res.tab.finalUrl || res.tab.url})`);
-    showTab(res.tab.id, res.tabs);
-  }
-  if (res.tabs) renderTabs(res.tabs);
-  if (res.console) renderConsole(res.console);
-};
-
-refreshTabsBtn.onclick = async () => {
-  const pw = pwEl.value;
-  if(!pw){ alert('Password required'); return; }
-  const res = await callWorker({ password: pw, command: { type:'list_tabs' } });
-  if (res.error) { appendMsg('Error', res.error); return; }
-  if (res.tabs) renderTabs(res.tabs);
-  if (res.console) renderConsole(res.console);
-};
-
-function renderTabs(tabs) {
-  lastTabs = tabs || [];
-  tabsList.innerHTML = '';
-  // reverse so newest first visually
-  for (const t of (tabs || []).slice().reverse()) {
-    const div = document.createElement('div');
-    div.className = 'tab';
-    div.innerHTML = `
-      <div class="tab-id">${escapeHtml(t.id)}</div>
-      <div style="font-weight:600">${escapeHtml(t.title || t.finalUrl || t.url)}</div>
-      <div class="small">${escapeHtml(t.finalUrl || t.url)}</div>
-      <div class="small">status: ${escapeHtml(t.status)} lastFetched: ${escapeHtml(t.lastFetchedAt || 'n/a')}</div>
-    `;
-    div.onclick = () => {
-      selectedTabId = t.id;
-      Array.from(tabsList.querySelectorAll('.tab')).forEach(el => el.style.outline = '');
-      div.style.outline = '2px solid #2b6';
-      displayTabContent(t);
-    };
-    tabsList.appendChild(div);
-  }
-  // If nothing selected, try to select the first tab
-  if (!selectedTabId && lastTabs && lastTabs.length) {
-    const t = lastTabs[lastTabs.length - 1];
-    selectedTabId = t.id;
-    displayTabContent(t);
-    // highlight UI element
-    const first = tabsList.querySelector('.tab');
-    if (first) first.style.outline = '2px solid #2b6';
-  }
-}
-
-function displayTabContent(tab) {
-  if (!tab) { tabContentDiv.textContent = 'No tab selected.'; return; }
-  const html = [];
-  html.push(`ID: ${tab.id}`);
-  html.push(`Title: ${tab.title || '(no title)'}`);
-  html.push(`URL: ${tab.finalUrl || tab.url}`);
-  html.push(`Status: ${tab.status}`);
-  if (tab.lastFetchedAt) html.push(`Last Fetched: ${tab.lastFetchedAt}`);
-  if (tab.summary) html.push(`\n--- Summary ---\n${tab.summary}`);
-  if (tab.content) {
-    html.push(`\n--- Content (truncated) ---\n${tab.content.slice(0, 20000)}`);
-  } else {
-    html.push(`\n(No content fetched yet)`);
-  }
-  tabContentDiv.textContent = html.join("\n\n");
-}
-
-function showTab(tabId, tabs) {
-  const t = (tabs || lastTabs || []).find(x => x.id === tabId);
-  if (t) {
-    selectedTabId = tabId;
-    displayTabContent(t);
-    renderTabs(tabs || lastTabs);
-  } else {
-    // request list and attempt to show
-    refreshTabsBtn.onclick();
-  }
-}
-
-fetchTabBtn.onclick = async () => {
-  if(!selectedTabId) { alert('Select a tab'); return; }
-  const pw = pwEl.value; if(!pw) { alert('Password required'); return; }
-  const res = await callWorker({ password: pw, command: { type:'fetch_tab', tabId: selectedTabId } });
-  if (res.error) { appendMsg('Error', res.error); return; }
-  if (res.tab) appendMsg('System', `Fetched ${res.tab.id} (${res.tab.finalUrl || res.tab.url})`);
-  if (res.tabs) renderTabs(res.tabs);
-  if (res.console) renderConsole(res.console);
-  if (res.tab) displayTabContent(res.tab);
-};
-
-summTabBtn.onclick = async () => {
-  if(!selectedTabId) { alert('Select a tab'); return; }
-  const pw = pwEl.value; if(!pw) { alert('Password required'); return; }
-  const res = await callWorker({ password: pw, command: { type:'summarize_tab', tabId: selectedTabId, words: 120 }});
-  if (res.error) { appendMsg('Error', res.error); return; }
-  if (res.result) appendMsg('System', `Summary for ${selectedTabId}: ${res.result.summary}`);
-  if (res.tab) displayTabContent(res.tab);
-  if (res.tabs) renderTabs(res.tabs);
-  if (res.console) renderConsole(res.console);
-};
-
-closeTabBtn.onclick = async () => {
-  if(!selectedTabId) { alert('Select a tab'); return; }
-  const pw = pwEl.value; if(!pw) { alert('Password required'); return; }
-  const res = await callWorker({ password: pw, command: { type:'close_tab', tabId: selectedTabId }});
-  if (res.error) { appendMsg('Error', res.error); return; }
-  appendMsg('System', `Closed ${selectedTabId}`);
-  selectedTabId = null;
-  if (res.tabs) renderTabs(res.tabs);
-  if (res.console) renderConsole(res.console);
-};
-
-function renderConsole(entries) {
-  consoleDiv.innerHTML = '';
-  for (const e of (entries || []).slice(-200).reverse()) {
-    const line = document.createElement('div');
-    line.innerHTML = `<span class="small">[${escapeHtml(e.ts)}]</span> <b>${escapeHtml(e.level)}</b> ${escapeHtml(e.msg)}`;
-    consoleDiv.appendChild(line);
-  }
-  consoleDiv.scrollTop = consoleDiv.scrollHeight;
-}
-
-// initial load
-(async ()=> {
-  const res = await callWorker({ password: pwEl.value||"", command: { type:'list_tabs' } });
-  if (res && res.tabs) renderTabs(res.tabs);
-  if (res && res.console) renderConsole(res.console);
-})();
-</script>
-</body>
-</html>
