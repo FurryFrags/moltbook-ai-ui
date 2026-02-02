@@ -19,6 +19,9 @@
   .tab-id { font-family: monospace; color:#9ad; display:block; margin-bottom:6px; }
   #replyArea { white-space:pre-wrap; padding:8px; background:#090909; border-radius:6px; min-height:60px }
   #tabContent { white-space:pre-wrap; padding:12px; background:#060606; border-radius:6px; margin-top:12px; max-height:50vh; overflow:auto; font-family:monospace; font-size:13px; }
+  #embedContainer { width:100%; height:420px; background:#000; border-radius:6px; overflow:hidden; position:relative; }
+  iframe.embed { width:100%; height:100%; border:0; display:block; }
+  .embed-controls{display:flex;gap:8px;margin-top:8px}
 </style>
 </head>
 <body>
@@ -53,6 +56,7 @@
     <div id="replyArea"></div>
 
     <h3 style="margin-top:12px">Selected Tab</h3>
+    <div id="embedContainer" style="display:none"></div>
     <div id="tabContent">No tab selected.</div>
   </div>
 
@@ -70,6 +74,7 @@
   </div>
 </div>
 
+<!-- SoundCloud widget API will be injected when needed -->
 <script>
 const WORKER_URL = "https://ashen.furryfrags.workers.dev"; // change to your worker URL
 const pwEl = document.getElementById('pw');
@@ -80,6 +85,7 @@ const openUrl = document.getElementById('openUrl');
 const messagesDiv = document.getElementById('messages');
 const replyArea = document.getElementById('replyArea');
 const tabContentDiv = document.getElementById('tabContent');
+const embedContainer = document.getElementById('embedContainer');
 const tabsList = document.getElementById('tabsList');
 const consoleDiv = document.getElementById('console');
 const refreshTabsBtn = document.getElementById('refreshTabs');
@@ -89,6 +95,7 @@ const closeTabBtn = document.getElementById('closeTab');
 
 let selectedTabId = null;
 let lastTabs = [];
+let scWidget = null; // SoundCloud widget instance
 
 function appendMsg(who,text){ const d=document.createElement('div'); d.className='msg'; d.innerHTML=`<b>${who}:</b> ${escapeHtml(text)}`; messagesDiv.appendChild(d); messagesDiv.scrollTop = messagesDiv.scrollHeight; }
 function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -182,8 +189,18 @@ function renderTabs(tabs) {
   }
 }
 
+// render embed player if available (SoundCloud support)
 function displayTabContent(tab) {
-  if (!tab) { tabContentDiv.textContent = 'No tab selected.'; return; }
+  if (!tab) { hideEmbed(); tabContentDiv.textContent = 'No tab selected.'; return; }
+
+  // If embed metadata present (from worker), render the embed player
+  if (tab.embed && tab.embed.type === 'soundcloud' && tab.embed.embedUrl) {
+    showSoundCloudEmbed(tab.embed.embedUrl, tab);
+    return;
+  } else {
+    hideEmbed();
+  }
+
   const html = [];
   html.push(`ID: ${tab.id}`);
   html.push(`Title: ${tab.title || '(no title)'}`);
@@ -197,6 +214,54 @@ function displayTabContent(tab) {
     html.push(`\n(No content fetched yet)`);
   }
   tabContentDiv.textContent = html.join("\n\n");
+}
+
+function showSoundCloudEmbed(embedUrl, tab) {
+  embedContainer.innerHTML = '';
+  embedContainer.style.display = 'block';
+  tabContentDiv.textContent = '';
+  // create iframe
+  const iframe = document.createElement('iframe');
+  iframe.className = 'embed';
+  iframe.src = embedUrl + (embedUrl.includes('?') ? '&' : '?') + 'visual=true';
+  iframe.setAttribute('allow', 'autoplay');
+  iframe.setAttribute('id', 'sc-iframe-' + tab.id);
+  embedContainer.appendChild(iframe);
+
+  // inject widget script if not already present
+  if (!window.SC) {
+    const s = document.createElement('script');
+    s.src = 'https://w.soundcloud.com/player/api.js';
+    s.onload = ()=> { initSCWidget(iframe); };
+    document.body.appendChild(s);
+  } else {
+    initSCWidget(iframe);
+  }
+
+  // simple controls
+  const controls = document.createElement('div');
+  controls.className = 'embed-controls';
+  controls.innerHTML = `<button id="sc-play">Play</button><button id="sc-pause">Pause</button><button id="sc-seek">Seek +10s</button>`;
+  embedContainer.appendChild(controls);
+
+  document.getElementById('sc-play').onclick = ()=> { if (scWidget) scWidget.play(); };
+  document.getElementById('sc-pause').onclick = ()=> { if (scWidget) scWidget.pause(); };
+  document.getElementById('sc-seek').onclick = ()=> { if (scWidget) scWidget.seekTo && scWidget.seekTo((scWidget.getPosition?scWidget.getPosition():0) + 10000); };
+}
+
+function initSCWidget(iframe){
+  try {
+    scWidget = window.SC.Widget(iframe);
+    // optional: listen to events
+    scWidget.bind(window.SC.Widget.Events.PLAY, ()=> console.log('SC play'));
+    scWidget.bind(window.SC.Widget.Events.PAUSE, ()=> console.log('SC pause'));
+  } catch (e) { console.warn('SC Widget init failed', e); }
+}
+
+function hideEmbed() {
+  embedContainer.style.display = 'none';
+  embedContainer.innerHTML = '';
+  scWidget = null;
 }
 
 fetchTabBtn.onclick = async () => {
