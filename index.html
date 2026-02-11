@@ -131,6 +131,7 @@ let lastTabs = [];
 let scWidget = null; // SoundCloud widget instance
 let liveTimer = null;
 let embedFallbackTimer = null;
+let cleanupUniversalEmbed = null;
 
 const TRUSTED_NEWS_DOMAINS = [
   'apnews.com','reuters.com','bbc.com','cnn.com','nytimes.com','washingtonpost.com','theguardian.com',
@@ -460,6 +461,11 @@ function showUniversalWebsiteEmbed(tab) {
     return;
   }
 
+  if (cleanupUniversalEmbed) {
+    cleanupUniversalEmbed();
+    cleanupUniversalEmbed = null;
+  }
+
   if (embedFallbackTimer) {
     clearTimeout(embedFallbackTimer);
     embedFallbackTimer = null;
@@ -471,6 +477,43 @@ function showUniversalWebsiteEmbed(tab) {
   const iframe = document.createElement('iframe');
   iframe.className = 'embed';
   iframe.referrerPolicy = 'no-referrer';
+
+  let switched = false;
+  let directLoaded = false;
+  let isDirectMode = true;
+  let userManuallySwitched = false;
+
+  const note = document.createElement('div');
+  note.className = 'embed-mode-note';
+  note.textContent = `Viewing: direct website frame (${targetUrl})`;
+
+  const useDirect = (manual = false) => {
+    if (manual) userManuallySwitched = true;
+    isDirectMode = true;
+    switched = false;
+    directLoaded = false;
+    iframe.src = targetUrl;
+    note.textContent = `Viewing: direct website frame (${targetUrl})`;
+  };
+  const useMirror = (manual = false) => {
+    if (manual) userManuallySwitched = true;
+    isDirectMode = false;
+    switched = true;
+    iframe.src = toMirrorUrl(targetUrl);
+    note.textContent = 'Viewing: mirror mode (r.jina.ai) for sites that block iframes.';
+  };
+
+  iframe.onload = () => {
+    if (isDirectMode) {
+      directLoaded = true;
+    }
+  };
+  iframe.onerror = () => {
+    if (isDirectMode && !switched) {
+      useMirror();
+    }
+  };
+
   iframe.src = targetUrl;
   embedContainer.appendChild(iframe);
 
@@ -478,34 +521,36 @@ function showUniversalWebsiteEmbed(tab) {
   controls.className = 'embed-controls';
   controls.innerHTML = `<button id="embedDirect">Direct</button><button id="embedMirror">Mirror</button><button id="embedOpen">Open</button>`;
   embedContainer.appendChild(controls);
-
-  const note = document.createElement('div');
-  note.className = 'embed-mode-note';
-  note.textContent = `Viewing: direct website frame (${targetUrl})`;
   embedContainer.appendChild(note);
 
-  const useDirect = () => {
-    iframe.src = targetUrl;
-    note.textContent = `Viewing: direct website frame (${targetUrl})`;
-  };
-  const useMirror = () => {
-    iframe.src = toMirrorUrl(targetUrl);
-    note.textContent = 'Viewing: mirror mode (r.jina.ai) for sites that block iframes.';
-  };
-
-  document.getElementById('embedDirect').onclick = useDirect;
-  document.getElementById('embedMirror').onclick = useMirror;
+  document.getElementById('embedDirect').onclick = () => useDirect(true);
+  document.getElementById('embedMirror').onclick = () => useMirror(true);
   document.getElementById('embedOpen').onclick = () => window.open(targetUrl, '_blank', 'noopener,noreferrer');
 
   // Auto-fallback improves "all websites" coverage for X-Frame-Options blocked pages.
   embedFallbackTimer = setTimeout(() => {
-    if (iframe.src === targetUrl) {
+    if (!directLoaded && !switched && !userManuallySwitched) {
       useMirror();
     }
   }, 2200);
+
+  cleanupUniversalEmbed = () => {
+    if (embedFallbackTimer) {
+      clearTimeout(embedFallbackTimer);
+      embedFallbackTimer = null;
+    }
+    iframe.onload = null;
+    iframe.onerror = null;
+  };
 }
 
+
 function showSoundCloudEmbed(embedUrl, tab) {
+  if (cleanupUniversalEmbed) {
+    cleanupUniversalEmbed();
+    cleanupUniversalEmbed = null;
+  }
+
   embedContainer.innerHTML = '';
   embedContainer.style.display = 'block';
   tabContentDiv.textContent = '';
@@ -548,6 +593,11 @@ function initSCWidget(iframe){
 }
 
 function hideEmbed() {
+  if (cleanupUniversalEmbed) {
+    cleanupUniversalEmbed();
+    cleanupUniversalEmbed = null;
+  }
+
   embedContainer.style.display = 'none';
   embedContainer.innerHTML = '';
   scWidget = null;
