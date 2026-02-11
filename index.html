@@ -316,7 +316,7 @@ sendBtn.onclick = async () => {
 
 openBtn.onclick = async () => {
   const pw = pwEl.value;
-  const url = openUrl.value.trim();
+  const url = normalizeEmbeddableUrl(openUrl.value.trim());
   if(!pw){ alert('Password required'); return; }
   if(!url){ alert('Provide a URL'); return; }
   appendMsg('You', `open_tab ${url}`);
@@ -332,7 +332,7 @@ openBtn.onclick = async () => {
 
 browseNowBtn.onclick = async () => {
   const pw = pwEl.value;
-  const url = openUrl.value.trim();
+  const url = normalizeEmbeddableUrl(openUrl.value.trim());
   if(!pw){ alert('Password required'); return; }
   if(!url){ alert('Provide a URL'); return; }
   appendMsg('You', `browse_live ${url}`);
@@ -448,6 +448,72 @@ function normalizeEmbeddableUrl(url) {
   return `https://${url}`;
 }
 
+function extractYouTubeEmbedUrl(rawUrl) {
+  const normalized = normalizeEmbeddableUrl(rawUrl);
+  if (!normalized) return '';
+  try {
+    const parsed = new URL(normalized);
+    const host = parsed.hostname.toLowerCase();
+    let videoId = '';
+
+    if (host === 'youtu.be') {
+      videoId = parsed.pathname.slice(1).split('/')[0];
+    } else if (host.endsWith('youtube.com') || host.endsWith('youtube-nocookie.com')) {
+      if (parsed.pathname === '/watch') {
+        videoId = parsed.searchParams.get('v') || '';
+      } else if (parsed.pathname.startsWith('/shorts/')) {
+        videoId = parsed.pathname.split('/')[2] || '';
+      } else if (parsed.pathname.startsWith('/embed/')) {
+        videoId = parsed.pathname.split('/')[2] || '';
+      }
+    }
+
+    if (!videoId) return '';
+    return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}`;
+  } catch (_err) {
+    return '';
+  }
+}
+
+function shouldPreferMirror(hostname) {
+  const host = (hostname || '').toLowerCase();
+  const blockedHosts = ['google.com', 'x.com', 'twitter.com'];
+  return blockedHosts.some((h) => host === h || host.endsWith(`.${h}`));
+}
+
+function getInitialEmbedMode(targetUrl) {
+  try {
+    const parsed = new URL(targetUrl);
+    const hostname = parsed.hostname.toLowerCase();
+    const ytEmbed = extractYouTubeEmbedUrl(targetUrl);
+    if (ytEmbed) {
+      return {
+        mode: 'youtube-embed',
+        src: ytEmbed,
+        note: 'Viewing: YouTube safe embed mode (nocookie player).'
+      };
+    }
+    if (shouldPreferMirror(hostname)) {
+      const mirror = toMirrorUrl(targetUrl);
+      if (mirror) {
+        return {
+          mode: 'mirror',
+          src: mirror,
+          note: `Viewing: mirror mode (r.jina.ai) for ${hostname} (direct framing is commonly blocked).`
+        };
+      }
+    }
+  } catch (_err) {
+    // fall through
+  }
+
+  return {
+    mode: 'direct',
+    src: targetUrl,
+    note: `Viewing: direct website frame (${targetUrl})`
+  };
+}
+
 function toMirrorUrl(url) {
   const normalized = normalizeEmbeddableUrl(url);
   if (!normalized) return '';
@@ -490,7 +556,8 @@ function showUniversalWebsiteEmbed(tab) {
 
   const note = document.createElement('div');
   note.className = 'embed-mode-note';
-  note.textContent = `Viewing: direct website frame (${targetUrl})`;
+  const initialMode = getInitialEmbedMode(targetUrl);
+  note.textContent = initialMode.note;
 
   const useDirect = (manual = false) => {
     if (manual) userManuallySwitched = true;
@@ -513,6 +580,19 @@ function showUniversalWebsiteEmbed(tab) {
     note.textContent = 'Viewing: mirror mode (r.jina.ai) for sites that block iframes.';
   };
 
+  const useYouTubeEmbed = (manual = false) => {
+    if (manual) userManuallySwitched = true;
+    const ytEmbedUrl = extractYouTubeEmbedUrl(targetUrl);
+    if (!ytEmbedUrl) {
+      note.textContent = 'YouTube embed mode is unavailable for this URL.';
+      return;
+    }
+    isDirectMode = false;
+    switched = true;
+    iframe.src = ytEmbedUrl;
+    note.textContent = 'Viewing: YouTube safe embed mode (nocookie player).';
+  };
+
   iframe.onload = () => {
     if (isDirectMode) {
       directLoaded = true;
@@ -524,18 +604,25 @@ function showUniversalWebsiteEmbed(tab) {
     }
   };
 
-  iframe.src = targetUrl;
+  iframe.src = initialMode.src;
+  isDirectMode = initialMode.mode === 'direct';
+  switched = initialMode.mode !== 'direct';
   embedContainer.appendChild(iframe);
 
   const controls = document.createElement('div');
   controls.className = 'embed-controls';
-  controls.innerHTML = `<button id="embedDirect">Direct</button><button id="embedMirror">Mirror</button><button id="embedOpen">Open</button>`;
+  controls.innerHTML = `<button id="embedDirect">Direct</button><button id="embedMirror">Mirror</button><button id="embedYT">YouTube</button><button id="embedOpen">Open</button>`;
   embedContainer.appendChild(controls);
   embedContainer.appendChild(note);
 
   document.getElementById('embedDirect').onclick = () => useDirect(true);
   document.getElementById('embedMirror').onclick = () => useMirror(true);
+  document.getElementById('embedYT').onclick = () => useYouTubeEmbed(true);
   document.getElementById('embedOpen').onclick = () => window.open(targetUrl, '_blank', 'noopener,noreferrer');
+
+  if (initialMode.mode === 'youtube-embed') {
+    useYouTubeEmbed();
+  }
 
   // Auto-fallback improves "all websites" coverage for X-Frame-Options blocked pages.
   embedFallbackTimer = setTimeout(() => {
