@@ -368,10 +368,12 @@ refreshTabsBtn.onclick = async () => {
 
 function renderTabs(tabs) {
   lastTabs = tabs || [];
+  Array.from(tabsList.querySelectorAll('.tab')).forEach(el => el.style.outline = '');
   tabsList.innerHTML = '';
   for (const t of (tabs || []).slice().reverse()) {
     const div = document.createElement('div');
     div.className = 'tab';
+    div.dataset.tabId = t.id;
     div.innerHTML = `
       <div class="tab-id">${escapeHtml(t.id)}</div>
       <div style="font-weight:600">${escapeHtml(t.title || t.finalUrl || t.url)}</div>
@@ -385,16 +387,29 @@ function renderTabs(tabs) {
       displayTabContent(t);
       ensureLivePolling();
     };
+    if (t.id === selectedTabId) {
+      div.style.outline = '2px solid #2b6';
+    }
     tabsList.appendChild(div);
   }
-  if (!selectedTabId && lastTabs && lastTabs.length) {
-    const t = lastTabs[lastTabs.length - 1];
-    selectedTabId = t.id;
-    displayTabContent(t);
-    ensureLivePolling();
-    const first = tabsList.querySelector('.tab');
-    if (first) first.style.outline = '2px solid #2b6';
+
+  const selectedTab = lastTabs.find(t => t.id === selectedTabId);
+  if (!selectedTab) {
+    selectedTabId = lastTabs.length ? lastTabs[lastTabs.length - 1].id : null;
+    Array.from(tabsList.querySelectorAll('.tab')).forEach(el => el.style.outline = '');
   }
+
+  const normalizedSelection = lastTabs.find(t => t.id === selectedTabId) || null;
+  if (normalizedSelection) {
+    const selectedEl = tabsList.querySelector(`[data-tab-id="${CSS.escape(normalizedSelection.id)}"]`);
+    if (selectedEl) selectedEl.style.outline = '2px solid #2b6';
+    displayTabContent(normalizedSelection);
+  } else {
+    displayTabContent(null);
+    tabContentDiv.textContent = 'No tabs available. Open a tab to begin.';
+  }
+
+  ensureLivePolling();
 }
 
 function renderEvidence(evidence) {
@@ -731,10 +746,18 @@ closeTabBtn.onclick = async () => {
   const res = await callWorker({ password: pw, command: { type:'close_tab', tabId: selectedTabId }});
   if (res.error) { appendMsg('Error', res.error); return; }
   appendMsg('System', `Closed ${selectedTabId}`);
-  selectedTabId = null;
-  if (res.tabs) renderTabs(res.tabs);
+  if (Array.isArray(res.tabs)) {
+    renderTabs(res.tabs);
+  } else {
+    const listRes = await callWorker({ password: pw, command: { type:'list_tabs' } });
+    if (listRes.error) {
+      appendMsg('Error', listRes.error);
+    } else {
+      renderTabs(listRes.tabs || []);
+      if (listRes.console) renderConsole(listRes.console);
+    }
+  }
   if (res.console) renderConsole(res.console);
-  ensureLivePolling();
 };
 
 liveMode.onchange = () => {
