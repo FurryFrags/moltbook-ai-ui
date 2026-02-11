@@ -67,10 +67,10 @@
 
     <div style="margin-top:12px">
       <label class="switch"><input id="liveMode" type="checkbox"/> Live internet mode (auto-refresh selected tab)</label>
-      <div class="small">Keeps the selected page fresh by re-fetching it on an interval.</div>
+      <div class="small">Keeps the selected page fresh with a throttled interval and adaptive backoff to avoid hammering sites.</div>
       <div style="height:6px"></div>
       <div class="controls">
-        <input id="liveSeconds" type="text" value="20" placeholder="seconds" />
+        <input id="liveSeconds" type="text" value="60" placeholder="seconds" />
         <button id="browseNowBtn">Browse URL now</button>
       </div>
     </div>
@@ -130,6 +130,9 @@ let selectedTabId = null;
 let lastTabs = [];
 let scWidget = null; // SoundCloud widget instance
 let liveTimer = null;
+let liveInFlight = false;
+let liveFailureCount = 0;
+let liveBackoffUntil = 0;
 let embedFallbackTimer = null;
 let cleanupUniversalEmbed = null;
 
@@ -749,34 +752,100 @@ liveSeconds.onchange = () => {
 
 function ensureLivePolling() {
   if (liveTimer) {
-    clearInterval(liveTimer);
+    clearTimeout(liveTimer);
     liveTimer = null;
   }
   if (!liveMode.checked || !selectedTabId) return;
-  const everyMs = Math.max(5, Number(liveSeconds.value) || 20) * 1000;
-  liveTimer = setInterval(refreshSelectedTab, everyMs);
+
+  const now = Date.now();
+  const waitMs = Math.max(0, liveBackoffUntil - now);
+  liveTimer = setTimeout(refreshSelectedTab, waitMs);
+}
+
+function getLiveBaseIntervalMs() {
+  // hard floor of 30s avoids accidental rapid polling that can look abusive.
+  const requestedSeconds = Number(liveSeconds.value) || 60;
+  const safeSeconds = Math.max(30, requestedSeconds);
+  return safeSeconds * 1000;
+}
+
+function isRateLimitLikeError(msg) {
+  const text = String(msg || '').toLowerCase();
+  return /429|too many requests|rate limit|ddos|captcha|temporarily blocked/.test(text);
+}
+
+function scheduleNextLiveRefresh() {
+  if (liveTimer) {
+    clearTimeout(liveTimer);
+    liveTimer = null;
+  }
+  if (!liveMode.checked || !selectedTabId) return;
+
+  const now = Date.now();
+  const base = getLiveBaseIntervalMs();
+  const jitter = Math.floor(base * (0.15 * Math.random()));
+  const adaptive = Math.min(base * 8, base * Math.pow(2, liveFailureCount));
+  const earliest = Math.max(now + adaptive + jitter, liveBackoffUntil);
+  liveTimer = setTimeout(refreshSelectedTab, Math.max(0, earliest - now));
 }
 
 async function refreshSelectedTab() {
   if (!selectedTabId || !liveMode.checked) return;
-  const pw = pwEl.value;
-  if (!pw) return;
-  const res = await callWorker({
-    password: pw,
-    command: { type:'fetch_tab', tabId: selectedTabId },
-    liveInternet: true,
-    requestedAt: new Date().toISOString()
-  });
-  if (res.error) {
-    appendMsg('System', `Live refresh failed: ${res.error}`);
+  if (document.hidden) {
+    scheduleNextLiveRefresh();
     return;
   }
-  if (res.tab) {
-    displayTabContent(res.tab);
+  if (liveInFlight) return;
+
+  const pw = pwEl.value;
+  if (!pw) {
+    scheduleNextLiveRefresh();
+    return;
   }
-  if (res.tabs) renderTabs(res.tabs);
-  if (res.console) renderConsole(res.console);
+
+  liveInFlight = true;
+  try {
+    const res = await callWorker({
+      password: pw,
+      command: { type:'fetch_tab', tabId: selectedTabId },
+      liveInternet: true,
+      requestedAt: new Date().toISOString()
+    });
+
+    if (res.error) {
+      liveFailureCount += 1;
+      if (isRateLimitLikeError(res.error)) {
+        const cooldownMs = Math.min(30 * 60 * 1000, getLiveBaseIntervalMs() * 12);
+        liveBackoffUntil = Date.now() + cooldownMs;
+        appendMsg('System', `Live refresh paused due to remote rate limiting. Retrying in ~${Math.ceil(cooldownMs / 60000)} min.`);
+      } else {
+        appendMsg('System', `Live refresh failed: ${res.error}`);
+      }
+      scheduleNextLiveRefresh();
+      return;
+    }
+
+    liveFailureCount = 0;
+    liveBackoffUntil = 0;
+    if (res.tab) {
+      displayTabContent(res.tab);
+    }
+    if (res.tabs) renderTabs(res.tabs);
+    if (res.console) renderConsole(res.console);
+    scheduleNextLiveRefresh();
+  } catch (err) {
+    liveFailureCount += 1;
+    appendMsg('System', `Live refresh request failed: ${err?.message || err}`);
+    scheduleNextLiveRefresh();
+  } finally {
+    liveInFlight = false;
+  }
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (!liveMode.checked) return;
+  ensureLivePolling();
+});
 
 function renderConsole(entries) {
   consoleDiv.innerHTML = '';
