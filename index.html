@@ -22,6 +22,7 @@
   #embedContainer { width:100%; height:420px; background:#000; border-radius:6px; overflow:hidden; position:relative; }
   iframe.embed { width:100%; height:100%; border:0; display:block; }
   .embed-controls{display:flex;gap:8px;margin-top:8px}
+  .embed-mode-note{font-size:12px;color:#8ecbff;margin-top:6px}
   label.switch { display:flex; gap:8px; align-items:center; cursor:pointer; }
   input[type=checkbox] { width:16px; height:16px; }
   #evidenceList { margin-top:12px; background:#0b0b0b;padding:8px;border-radius:6px; font-family:monospace; font-size:13px; max-height:30vh; overflow:auto }
@@ -129,18 +130,57 @@ let selectedTabId = null;
 let lastTabs = [];
 let scWidget = null; // SoundCloud widget instance
 let liveTimer = null;
+let embedFallbackTimer = null;
+
+const TRUSTED_NEWS_DOMAINS = [
+  'apnews.com','reuters.com','bbc.com','cnn.com','nytimes.com','washingtonpost.com','theguardian.com',
+  'npr.org','pbs.org','abcnews.go.com','cbsnews.com','nbcnews.com','bloomberg.com','wsj.com',
+  'aljazeera.com','france24.com','dw.com','elpais.com','lemonde.fr','usatoday.com'
+];
+
+function safeParseUrl(url) {
+  try { return new URL(url); } catch { return null; }
+}
+
+function normalizeEvidenceUrl(rawUrl) {
+  const cleaned = cleanEvidenceText(rawUrl);
+  const parsed = safeParseUrl(cleaned);
+  if (!parsed) return cleaned;
+  const isDdgRedirect = /duckduckgo\.com$/i.test(parsed.hostname) && parsed.pathname.startsWith('/l/');
+  if (!isDdgRedirect) return cleaned;
+  const embedded = parsed.searchParams.get('uddg');
+  if (!embedded) return cleaned;
+  try {
+    return decodeURIComponent(embedded);
+  } catch {
+    return embedded;
+  }
+}
+
+function domainFromUrl(rawUrl) {
+  const parsed = safeParseUrl(rawUrl);
+  return parsed ? parsed.hostname.toLowerCase() : '';
+}
+
+function isTrustedDomain(hostname) {
+  return TRUSTED_NEWS_DOMAINS.some(d => hostname === d || hostname.endsWith(`.${d}`));
+}
 
 function appendMsg(who,text){ const d=document.createElement('div'); d.className='msg'; d.innerHTML=`<b>${who}:</b> ${escapeHtml(text)}`; messagesDiv.appendChild(d); messagesDiv.scrollTop = messagesDiv.scrollHeight; }
 function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function scoreEvidenceItem(item) {
+  const normalizedUrl = normalizeEvidenceUrl(item?.url || '');
+  const hostname = domainFromUrl(normalizedUrl);
   const t = `${item?.title || ''} ${item?.snippet || ''} ${item?.summary || ''}`.toLowerCase();
   let score = 0;
-  if (item?.url && /^https?:\/\//i.test(item.url)) score += 2;
-  if (/reuters|apnews|bbc|france24|cnn|nytimes|washingtonpost|abcnews|lemonde|elpais/.test(t)) score += 2;
+  if (normalizedUrl && /^https?:\/\//i.test(normalizedUrl)) score += 2;
+  if (hostname && isTrustedDomain(hostname)) score += 3;
+  if (/wikipedia\.org$/.test(hostname)) score -= 1;
   if (/according to|reported|confirmed|official|statement|issued on/.test(t)) score += 1;
-  if (/400 bad request|returned an error 400|target url returning a bad request/.test(t)) score -= 3;
+  if (/400 bad request|returned an error 400|target url returning a bad request|status code 4\d\d|status code 5\d\d/.test(t)) score -= 4;
   if (/not accurate|cannot verify|unconfirmed|likely an error|rumor|fake|satire|denied/.test(t)) score -= 2;
+  if (!hostname) score -= 1;
   return score;
 }
 
@@ -153,19 +193,25 @@ function consolidateEvidence(evidence) {
     const score = scoreEvidenceItem(item);
     const title = cleanEvidenceText(item.title);
     const summary = cleanEvidenceText(item.summary || item.snippet);
-    const url = cleanEvidenceText(item.url);
+    const url = normalizeEvidenceUrl(item.url);
+    const hostname = domainFromUrl(url);
+    const trusted = isTrustedDomain(hostname);
     const combined = `${title} ${summary}`.toLowerCase();
     const negatesClaim = /not accurate|not captured|denied|unconfirmed|false|no indication/.test(combined);
-    return { score, title, summary, url, negatesClaim };
+    const isBroken = /400 bad request|returned an error 400|status code 4\d\d|status code 5\d\d/.test(combined);
+    return { score, title, summary, url, hostname, trusted, negatesClaim, isBroken };
   }).sort((a,b)=>b.score-a.score);
 
   const top = rows.slice(0, 5);
   const bullets = top.map((r, i) => `${i+1}. ${r.title || '(untitled)'} — ${r.summary || '(no summary)'}${r.url ? ` [${r.url}]` : ''}`);
   const cautionCount = top.filter(x => x.negatesClaim).length;
+  const brokenCount = top.filter(x => x.isBroken).length;
+  const trustedCount = top.filter(x => x.trusted).length;
   const meta = {
     selected: top.length,
     contradictionRisk: cautionCount > 0,
-    confidence: top.length ? Math.max(0, Math.min(100, 55 + top[0].score * 10 - cautionCount * 8)) : 0
+    lowReliability: brokenCount >= Math.max(2, Math.ceil(top.length / 2)) || trustedCount === 0,
+    confidence: top.length ? Math.max(0, Math.min(100, 45 + top[0].score * 8 - cautionCount * 10 - brokenCount * 8)) : 0
   };
   return { bullets, meta, top };
 }
@@ -175,11 +221,12 @@ function extractGroundedSummary(rows) {
     return 'I could not find enough reliable web evidence to answer confidently.';
   }
   const primary = rows[0];
-  const title = primary.title || 'Top retrieved source';
+  const title = primary.title || (primary.hostname ? `Source on ${primary.hostname}` : 'Top retrieved source');
   const summary = primary.summary || 'No summary was available from the retrieved evidence.';
-  const hasBrokenSources = rows.some(r => /400 bad request|returned an error 400/.test((r.summary || '').toLowerCase()));
-  const caution = hasBrokenSources
-    ? 'Some retrieved links appear broken (400 errors), so details should be treated cautiously.'
+  const brokenCount = rows.filter(r => r.isBroken).length;
+  const trustedCount = rows.filter(r => r.trusted).length;
+  const caution = brokenCount > 0 || trustedCount === 0
+    ? 'Retrieved evidence quality is mixed (broken links and/or weak sourcing), so this should be treated as tentative.'
     : '';
   return [
     `Based on the strongest retrieved evidence, ${title}: ${summary}`,
@@ -196,24 +243,21 @@ function buildGroundedReply(rawReply, evidence) {
     ? 'Grounded answer (built from live retrieval evidence):'
     : 'Grounded answer (cross-checked against live retrieval evidence):';
 
-  const groundedSummary = genericReply
-    ? extractGroundedSummary(top)
-    : null;
+  const groundedSummary = extractGroundedSummary(top);
 
   const combined = [
     header,
     '',
-    genericReply
-      ? `Answer: ${groundedSummary}`
-      : (rawReply ? `Model draft: ${rawReply}` : 'Model draft: (empty)'),
+    `Answer: ${groundedSummary}`,
+    (!genericReply && rawReply ? `\nModel draft (for reference): ${rawReply}` : ''),
     '',
     'Evidence highlights:',
     ...bullets
   ].join('\n');
 
-  const riskClass = meta.contradictionRisk ? 'answer-warn' : 'answer-ok';
-  const riskLabel = meta.contradictionRisk
-    ? 'Conflicting/low-confidence evidence detected — treat claims as tentative.'
+  const riskClass = (meta.contradictionRisk || meta.lowReliability || meta.confidence < 50) ? 'answer-warn' : 'answer-ok';
+  const riskLabel = (meta.contradictionRisk || meta.lowReliability || meta.confidence < 50)
+    ? 'Conflicting and/or low-quality evidence detected — treat claims as tentative.'
     : 'Evidence appears reasonably consistent.';
 
   const metaHtml = `<div class="answer-meta ${riskClass}">Confidence estimate: ${meta.confidence}% · ${riskLabel}</div>`;
@@ -378,9 +422,9 @@ function displayTabContent(tab) {
   if (tab.embed && tab.embed.type === 'soundcloud' && tab.embed.embedUrl) {
     showSoundCloudEmbed(tab.embed.embedUrl, tab);
     return;
-  } else {
-    hideEmbed();
   }
+
+  showUniversalWebsiteEmbed(tab);
 
   const html = [];
   html.push(`ID: ${tab.id}`);
@@ -395,6 +439,70 @@ function displayTabContent(tab) {
     html.push(`\n(No content fetched yet)`);
   }
   tabContentDiv.textContent = html.join("\n\n");
+}
+
+function normalizeEmbeddableUrl(url) {
+  if (!url) return '';
+  if (/^https?:\/\//i.test(url)) return url;
+  return `https://${url}`;
+}
+
+function toMirrorUrl(url) {
+  const normalized = normalizeEmbeddableUrl(url);
+  if (!normalized) return '';
+  return `https://r.jina.ai/http://${normalized.replace(/^https?:\/\//i,'')}`;
+}
+
+function showUniversalWebsiteEmbed(tab) {
+  const targetUrl = normalizeEmbeddableUrl(tab.finalUrl || tab.url || '');
+  if (!targetUrl) {
+    hideEmbed();
+    return;
+  }
+
+  if (embedFallbackTimer) {
+    clearTimeout(embedFallbackTimer);
+    embedFallbackTimer = null;
+  }
+
+  embedContainer.innerHTML = '';
+  embedContainer.style.display = 'block';
+
+  const iframe = document.createElement('iframe');
+  iframe.className = 'embed';
+  iframe.referrerPolicy = 'no-referrer';
+  iframe.src = targetUrl;
+  embedContainer.appendChild(iframe);
+
+  const controls = document.createElement('div');
+  controls.className = 'embed-controls';
+  controls.innerHTML = `<button id="embedDirect">Direct</button><button id="embedMirror">Mirror</button><button id="embedOpen">Open</button>`;
+  embedContainer.appendChild(controls);
+
+  const note = document.createElement('div');
+  note.className = 'embed-mode-note';
+  note.textContent = `Viewing: direct website frame (${targetUrl})`;
+  embedContainer.appendChild(note);
+
+  const useDirect = () => {
+    iframe.src = targetUrl;
+    note.textContent = `Viewing: direct website frame (${targetUrl})`;
+  };
+  const useMirror = () => {
+    iframe.src = toMirrorUrl(targetUrl);
+    note.textContent = 'Viewing: mirror mode (r.jina.ai) for sites that block iframes.';
+  };
+
+  document.getElementById('embedDirect').onclick = useDirect;
+  document.getElementById('embedMirror').onclick = useMirror;
+  document.getElementById('embedOpen').onclick = () => window.open(targetUrl, '_blank', 'noopener,noreferrer');
+
+  // Auto-fallback improves "all websites" coverage for X-Frame-Options blocked pages.
+  embedFallbackTimer = setTimeout(() => {
+    if (iframe.src === targetUrl) {
+      useMirror();
+    }
+  }, 2200);
 }
 
 function showSoundCloudEmbed(embedUrl, tab) {
