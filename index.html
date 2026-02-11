@@ -373,6 +373,73 @@ function cleanEvidenceText(v) {
   return String(v || '').replace(/\s+/g, ' ').trim();
 }
 
+function extractHttpUrls(text) {
+  const matches = String(text || '').match(/https?:\/\/[^\s)\]>"']+/gi) || [];
+  const seen = new Set();
+  const urls = [];
+  for (const raw of matches) {
+    const normalized = normalizeEmbeddableUrl(raw);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    urls.push(normalized);
+  }
+  return urls;
+}
+
+function isLikelyStatusUrl(url) {
+  const parsed = safeParseUrl(url);
+  if (!parsed) return false;
+  const host = parsed.hostname.toLowerCase();
+  return /(x\.com|twitter\.com|threads\.net)$/i.test(host) && /\/status\//i.test(parsed.pathname);
+}
+
+async function prefetchLinkedContext(text, pw) {
+  const urls = extractHttpUrls(text).slice(0, 2);
+  if (!urls.length) return '';
+
+  const snippets = [];
+  let loadedAny = false;
+
+  for (const url of urls) {
+    const needsStrongPrefetch = isLikelyStatusUrl(url);
+    const res = await callWorker({
+      password: pw,
+      command: {
+        type: 'open_tab',
+        url,
+        fetchNow: true,
+        summarizeAfter: true,
+        words: needsStrongPrefetch ? 220 : 140
+      },
+      liveInternet: true,
+      requestedAt: new Date().toISOString()
+    });
+
+    if (res?.tab) {
+      loadedAny = true;
+      selectedTabId = res.tab.id || selectedTabId;
+      const summary = cleanEvidenceText(res.tab.summary || 'No summary extracted.');
+      const excerpt = cleanEvidenceText((res.tab.content || '').slice(0, 1200));
+      snippets.push([
+        `Source URL: ${res.tab.finalUrl || res.tab.url || url}`,
+        `Title: ${cleanEvidenceText(res.tab.title || '(untitled)')}`,
+        `Summary: ${summary}`,
+        excerpt ? `Excerpt: ${excerpt}` : ''
+      ].filter(Boolean).join('\n'));
+    }
+
+    if (res?.tabs) renderTabs(res.tabs);
+    if (res?.console) renderConsole(res.console);
+  }
+
+  if (loadedAny) {
+    renderTabsWindow();
+    appendMsg('System', 'Read linked content first; using fetched page context for this reply.');
+  }
+
+  return snippets.join('\n\n---\n\n');
+}
+
 function consolidateEvidence(evidence) {
   const rows = (evidence || []).map((item) => {
     const score = scoreEvidenceItem(item);
@@ -499,10 +566,21 @@ sendBtn.onclick = async () => {
   evidenceList.innerHTML = '<div class="small-muted">Running retrieval (if enabled)...</div>';
   const startedAt = performance.now();
 
+  let prefetchedContext = '';
+  try {
+    prefetchedContext = await prefetchLinkedContext(text, pw);
+  } catch (err) {
+    appendMsg('System', `Could not pre-read linked content: ${err?.message || err}`);
+  }
+
+  const enrichedMessage = prefetchedContext
+    ? `${text}\n\nPre-read source material (use this first, then verify with retrieval):\n${prefetchedContext}\n\nRequired response style: 1) concise factual summary first, 2) your own opinion in your own words with personality. Do not claim a link is invalid unless the fetched source context says so.`
+    : text;
+
   const res = await callWorker({
     password: pw,
-    message: text,
-    forceWeb: forceWeb.checked,
+    message: enrichedMessage,
+    forceWeb: forceWeb.checked || Boolean(prefetchedContext),
     liveInternet: true,
     requestedAt: new Date().toISOString()
   }, { signal: activeChatController.signal });
