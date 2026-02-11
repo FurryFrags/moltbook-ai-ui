@@ -60,6 +60,16 @@
       <label class="switch"><input id="forceWeb" type="checkbox"/> Force web search & consolidate evidence before answering</label>
       <div class="small">When checked, Ashen will actively run the retrieval pipeline for info requests (and always try when asked).</div>
     </div>
+
+    <div style="margin-top:12px">
+      <label class="switch"><input id="liveMode" type="checkbox"/> Live internet mode (auto-refresh selected tab)</label>
+      <div class="small">Keeps the selected page fresh by re-fetching it on an interval.</div>
+      <div style="height:6px"></div>
+      <div class="controls">
+        <input id="liveSeconds" type="text" value="20" placeholder="seconds" />
+        <button id="browseNowBtn">Browse URL now</button>
+      </div>
+    </div>
   </div>
 
   <div class="panel" id="center">
@@ -108,10 +118,14 @@ const summTabBtn = document.getElementById('summTab');
 const closeTabBtn = document.getElementById('closeTab');
 const forceWeb = document.getElementById('forceWeb');
 const evidenceList = document.getElementById('evidenceList');
+const liveMode = document.getElementById('liveMode');
+const liveSeconds = document.getElementById('liveSeconds');
+const browseNowBtn = document.getElementById('browseNowBtn');
 
 let selectedTabId = null;
 let lastTabs = [];
 let scWidget = null; // SoundCloud widget instance
+let liveTimer = null;
 
 function appendMsg(who,text){ const d=document.createElement('div'); d.className='msg'; d.innerHTML=`<b>${who}:</b> ${escapeHtml(text)}`; messagesDiv.appendChild(d); messagesDiv.scrollTop = messagesDiv.scrollHeight; }
 function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -141,7 +155,13 @@ sendBtn.onclick = async () => {
   appendMsg('You', text);
   inputEl.value = '';
   evidenceList.innerHTML = '<div class="small-muted">Running retrieval (if enabled)...</div>';
-  const res = await callWorker({ password: pw, message: text, forceWeb: forceWeb.checked });
+  const res = await callWorker({
+    password: pw,
+    message: text,
+    forceWeb: forceWeb.checked,
+    liveInternet: true,
+    requestedAt: new Date().toISOString()
+  });
   if (res.error) { appendMsg('Error', res.error); evidenceList.innerHTML = '<div class="small-muted">Retrieval failed.</div>'; return; }
   if (res.reply) {
     replyArea.textContent = res.reply;
@@ -167,6 +187,30 @@ openBtn.onclick = async () => {
   }
   if (res.tabs) renderTabs(res.tabs);
   if (res.console) renderConsole(res.console);
+};
+
+browseNowBtn.onclick = async () => {
+  const pw = pwEl.value;
+  const url = openUrl.value.trim();
+  if(!pw){ alert('Password required'); return; }
+  if(!url){ alert('Provide a URL'); return; }
+  appendMsg('You', `browse_live ${url}`);
+  const res = await callWorker({
+    password: pw,
+    command: { type:'open_tab', url, fetchNow: true, summarizeAfter: false },
+    liveInternet: true,
+    requestedAt: new Date().toISOString()
+  });
+  if (res.error) { appendMsg('Error', res.error); return; }
+  if (res.tab) {
+    selectedTabId = res.tab.id;
+    displayTabContent(res.tab);
+    ensureLivePolling();
+    appendMsg('System', `Live browsing ${res.tab.finalUrl || res.tab.url}`);
+  }
+  if (res.tabs) renderTabs(res.tabs);
+  if (res.console) renderConsole(res.console);
+  ensureLivePolling();
 };
 
 refreshTabsBtn.onclick = async () => {
@@ -195,6 +239,7 @@ function renderTabs(tabs) {
       Array.from(tabsList.querySelectorAll('.tab')).forEach(el => el.style.outline = '');
       div.style.outline = '2px solid #2b6';
       displayTabContent(t);
+      ensureLivePolling();
     };
     tabsList.appendChild(div);
   }
@@ -202,6 +247,7 @@ function renderTabs(tabs) {
     const t = lastTabs[lastTabs.length - 1];
     selectedTabId = t.id;
     displayTabContent(t);
+    ensureLivePolling();
     const first = tabsList.querySelector('.tab');
     if (first) first.style.outline = '2px solid #2b6';
   }
@@ -334,7 +380,52 @@ closeTabBtn.onclick = async () => {
   selectedTabId = null;
   if (res.tabs) renderTabs(res.tabs);
   if (res.console) renderConsole(res.console);
+  ensureLivePolling();
 };
+
+liveMode.onchange = () => {
+  if (liveMode.checked) {
+    appendMsg('System', 'Live internet mode enabled. Selected tab will auto-refresh.');
+  } else {
+    appendMsg('System', 'Live internet mode paused.');
+  }
+  ensureLivePolling();
+};
+
+liveSeconds.onchange = () => {
+  ensureLivePolling();
+};
+
+function ensureLivePolling() {
+  if (liveTimer) {
+    clearInterval(liveTimer);
+    liveTimer = null;
+  }
+  if (!liveMode.checked || !selectedTabId) return;
+  const everyMs = Math.max(5, Number(liveSeconds.value) || 20) * 1000;
+  liveTimer = setInterval(refreshSelectedTab, everyMs);
+}
+
+async function refreshSelectedTab() {
+  if (!selectedTabId || !liveMode.checked) return;
+  const pw = pwEl.value;
+  if (!pw) return;
+  const res = await callWorker({
+    password: pw,
+    command: { type:'fetch_tab', tabId: selectedTabId },
+    liveInternet: true,
+    requestedAt: new Date().toISOString()
+  });
+  if (res.error) {
+    appendMsg('System', `Live refresh failed: ${res.error}`);
+    return;
+  }
+  if (res.tab) {
+    displayTabContent(res.tab);
+  }
+  if (res.tabs) renderTabs(res.tabs);
+  if (res.console) renderConsole(res.console);
+}
 
 function renderConsole(entries) {
   consoleDiv.innerHTML = '';
