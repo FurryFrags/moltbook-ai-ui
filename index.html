@@ -516,8 +516,11 @@ function ensureTabsWindow(forceFocus = false) {
     .toolbar button{background:var(--accent);color:#fff;border:none;padding:8px 12px;border-radius:9px;cursor:pointer;font-weight:600}
     .toolbar .muted{font-size:12px;color:var(--muted)}
     #popupTabsStrip{display:flex;gap:8px;overflow:auto;padding:6px;background:#141418;border:1px solid var(--border);border-radius:10px 10px 0 0}
-    .popup-tab{padding:10px 12px;border:1px solid #2a2d36;border-bottom:none;border-radius:10px 10px 0 0;background:#17171b;min-width:230px;cursor:pointer}
+    .popup-tab{padding:10px 12px;border:1px solid #2a2d36;border-bottom:none;border-radius:10px 10px 0 0;background:#17171b;min-width:230px;cursor:pointer;display:flex;gap:8px;justify-content:space-between;align-items:flex-start}
     .popup-tab.active{background:#0b0b0b;border-color:var(--accent);box-shadow:inset 0 -2px 0 var(--accent)}
+    .popup-tab-main{min-width:0;text-align:left}
+    .popup-tab-close{background:#2a2d36;color:#dbe4ff;border:none;border-radius:999px;width:24px;height:24px;line-height:24px;text-align:center;cursor:pointer;font-size:14px;font-weight:700;flex:0 0 auto}
+    .popup-tab-close:hover{background:#dc2626;color:#fff}
     .popup-tab .id{font-family:monospace;color:#9ad;font-size:11px}
     .popup-tab .title,.popup-tab .url{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .popup-tab .title{font-weight:600;margin-top:2px}
@@ -531,6 +534,7 @@ function ensureTabsWindow(forceFocus = false) {
   <div class="toolbar">
     <button id="popupRefresh">Refresh Tabs</button>
     <button id="popupOpenExternal">Open Current in New Tab</button>
+    <button id="popupCloseCurrent">Close Current Tab</button>
     <span class="muted">Chrome-style strip + large viewer</span>
   </div>
   <div id="popupTabsStrip"></div>
@@ -549,11 +553,15 @@ function ensureTabsWindow(forceFocus = false) {
 
   const refreshBtn = tabsWindow.document.getElementById('popupRefresh');
   const externalBtn = tabsWindow.document.getElementById('popupOpenExternal');
+  const closeCurrentBtn = tabsWindow.document.getElementById('popupCloseCurrent');
   refreshBtn.onclick = () => refreshTabsBtn.click();
   externalBtn.onclick = () => {
     const selected = lastTabs.find(t => t.id === selectedTabId);
     const target = selected?.finalUrl || selected?.url;
     if (target) window.open(target, '_blank', 'noopener,noreferrer');
+  };
+  closeCurrentBtn.onclick = async () => {
+    await closeSelectedTab(selectedTabId);
   };
 
   if (forceFocus) tabsWindow.focus();
@@ -572,15 +580,18 @@ function renderTabsWindow() {
   strip.innerHTML = '';
   const list = lastTabs.slice().reverse();
   list.forEach((tab) => {
-    const item = popupDoc.createElement('button');
-    item.type = 'button';
+    const item = popupDoc.createElement('div');
     item.className = `popup-tab ${tab.id === selectedTabId ? 'active' : ''}`;
     item.innerHTML = `
-      <div class="id">${escapeHtml(tab.id)}</div>
-      <div class="title">${escapeHtml(tab.title || tab.finalUrl || tab.url || '(untitled)')}</div>
-      <div class="url">${escapeHtml(tab.finalUrl || tab.url || '')}</div>
+      <div class="popup-tab-main">
+        <div class="id">${escapeHtml(tab.id)}</div>
+        <div class="title">${escapeHtml(tab.title || tab.finalUrl || tab.url || '(untitled)')}</div>
+        <div class="url">${escapeHtml(tab.finalUrl || tab.url || '')}</div>
+      </div>
+      <button type="button" class="popup-tab-close" title="Close tab" aria-label="Close tab">×</button>
     `;
-    item.onclick = () => {
+
+    item.querySelector('.popup-tab-main').onclick = () => {
       selectedTabId = tab.id;
       const selectedInMain = tabsList.querySelector(`[data-tab-id="${CSS.escape(tab.id)}"]`);
       for (const el of tabsList.querySelectorAll('.tab')) el.classList.remove('active');
@@ -589,6 +600,12 @@ function renderTabsWindow() {
       displayTabContent(liveTab);
       renderTabsWindow();
       ensureLivePolling();
+    };
+
+    item.querySelector('.popup-tab-close').onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSelectedTab(tab.id);
     };
     strip.appendChild(item);
   });
@@ -946,12 +963,12 @@ summTabBtn.onclick = async () => {
   renderTabsWindow();
 };
 
-closeTabBtn.onclick = async () => {
-  if(!selectedTabId) { alert('Select a tab'); return; }
+async function closeSelectedTab(tabId = selectedTabId) {
+  if(!tabId) { alert('Select a tab'); return; }
   const pw = pwEl.value; if(!pw) { alert('Password required'); return; }
-  const res = await callWorker({ password: pw, command: { type:'close_tab', tabId: selectedTabId }});
+  const res = await callWorker({ password: pw, command: { type:'close_tab', tabId }});
   if (res.error) { appendMsg('Error', res.error); return; }
-  appendMsg('System', `Closed ${selectedTabId}`);
+  appendMsg('System', `Closed ${tabId}`);
   if (Array.isArray(res.tabs)) {
     renderTabs(res.tabs);
   } else {
@@ -965,6 +982,10 @@ closeTabBtn.onclick = async () => {
   }
   if (res.console) renderConsole(res.console);
   renderTabsWindow();
+}
+
+closeTabBtn.onclick = async () => {
+  await closeSelectedTab();
 };
 
 liveMode.onchange = () => {
