@@ -28,6 +28,9 @@
   .evidence-item { padding:8px; border-radius:6px; margin-bottom:8px; background:#070707; }
   .evidence-title { font-weight:600; color:#9ad; margin-bottom:6px; }
   .small-muted { font-size:12px; color:#888; }
+  .answer-meta { margin-top:8px; font-size:12px; color:#9bc; }
+  .answer-warn { color:#ffb86b; }
+  .answer-ok { color:#9be39b; }
 </style>
 </head>
 <body>
@@ -130,6 +133,69 @@ let liveTimer = null;
 function appendMsg(who,text){ const d=document.createElement('div'); d.className='msg'; d.innerHTML=`<b>${who}:</b> ${escapeHtml(text)}`; messagesDiv.appendChild(d); messagesDiv.scrollTop = messagesDiv.scrollHeight; }
 function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+function scoreEvidenceItem(item) {
+  const t = `${item?.title || ''} ${item?.snippet || ''} ${item?.summary || ''}`.toLowerCase();
+  let score = 0;
+  if (item?.url && /^https?:\/\//i.test(item.url)) score += 2;
+  if (/reuters|apnews|bbc|france24|cnn|nytimes|washingtonpost|abcnews|lemonde|elpais/.test(t)) score += 2;
+  if (/according to|reported|confirmed|official|statement|issued on/.test(t)) score += 1;
+  if (/not accurate|cannot verify|unconfirmed|likely an error|rumor|fake|satire|denied/.test(t)) score -= 2;
+  return score;
+}
+
+function cleanEvidenceText(v) {
+  return String(v || '').replace(/\s+/g, ' ').trim();
+}
+
+function consolidateEvidence(evidence) {
+  const rows = (evidence || []).map((item) => {
+    const score = scoreEvidenceItem(item);
+    const title = cleanEvidenceText(item.title);
+    const summary = cleanEvidenceText(item.summary || item.snippet);
+    const url = cleanEvidenceText(item.url);
+    const combined = `${title} ${summary}`.toLowerCase();
+    const negatesClaim = /not accurate|not captured|denied|unconfirmed|false|no indication/.test(combined);
+    return { score, title, summary, url, negatesClaim };
+  }).sort((a,b)=>b.score-a.score);
+
+  const top = rows.slice(0, 5);
+  const bullets = top.map((r, i) => `${i+1}. ${r.title || '(untitled)'} — ${r.summary || '(no summary)'}${r.url ? ` [${r.url}]` : ''}`);
+  const cautionCount = top.filter(x => x.negatesClaim).length;
+  const meta = {
+    selected: top.length,
+    contradictionRisk: cautionCount > 0,
+    confidence: top.length ? Math.max(0, Math.min(100, 55 + top[0].score * 10 - cautionCount * 8)) : 0
+  };
+  return { bullets, meta };
+}
+
+function buildGroundedReply(rawReply, evidence) {
+  const { bullets, meta } = consolidateEvidence(evidence);
+  if (!bullets.length) return { text: rawReply || '', metaHtml: '' };
+
+  const genericReply = /according to my training data|i don't have the capability to browse|cannot browse/i.test(rawReply || '');
+  const header = genericReply
+    ? 'Grounded answer (built from live retrieval evidence):'
+    : 'Grounded answer (cross-checked against live retrieval evidence):';
+
+  const combined = [
+    header,
+    '',
+    rawReply ? `Model draft: ${rawReply}` : 'Model draft: (empty)',
+    '',
+    'Evidence highlights:',
+    ...bullets
+  ].join('\n');
+
+  const riskClass = meta.contradictionRisk ? 'answer-warn' : 'answer-ok';
+  const riskLabel = meta.contradictionRisk
+    ? 'Conflicting/low-confidence evidence detected — treat claims as tentative.'
+    : 'Evidence appears reasonably consistent.';
+
+  const metaHtml = `<div class="answer-meta ${riskClass}">Confidence estimate: ${meta.confidence}% · ${riskLabel}</div>`;
+  return { text: combined, metaHtml };
+}
+
 async function callWorker(payload){
   try {
     const headers = { 'Content-Type':'application/json' };
@@ -163,9 +229,15 @@ sendBtn.onclick = async () => {
     requestedAt: new Date().toISOString()
   });
   if (res.error) { appendMsg('Error', res.error); evidenceList.innerHTML = '<div class="small-muted">Retrieval failed.</div>'; return; }
-  if (res.reply) {
-    replyArea.textContent = res.reply;
-    appendMsg('Ashen', res.reply);
+  const grounded = buildGroundedReply(res.reply || '', res.evidence || []);
+  if (grounded.text) {
+    replyArea.textContent = grounded.text;
+    if (grounded.metaHtml) {
+      const metaWrap = document.createElement('div');
+      metaWrap.innerHTML = grounded.metaHtml;
+      replyArea.appendChild(metaWrap.firstChild);
+    }
+    appendMsg('Ashen', grounded.text);
   }
   if (res.evidence) renderEvidence(res.evidence);
   if (res.tab) displayTabContent(res.tab);
