@@ -27,7 +27,6 @@
   button:disabled{opacity:.65;cursor:not-allowed}
   .tab{padding:9px 12px;border-radius:10px 10px 0 0;background:#17171b;cursor:pointer;min-width:180px;max-width:300px;border:1px solid #26262d;border-bottom:none;display:inline-block;vertical-align:bottom}
   .tab.active{background:#0b0b0b;border-color:#2f6dd1;box-shadow:inset 0 -2px 0 #2f6dd1}
-  .tab-id{font-family:monospace;color:#9ad;display:block;margin-bottom:4px;font-size:11px}
   .tabs-strip{display:flex;gap:6px;overflow:auto;padding:6px 6px 0 6px;background:#141418;border-radius:10px 10px 0 0;border:1px solid var(--border);border-bottom:none}
   .tabs-actionbar{display:flex;gap:6px;padding:8px;background:#141418;border:1px solid var(--border);border-top:none;border-bottom:none}
   .tabs-window-launch{margin-top:8px}
@@ -52,7 +51,12 @@
   #center{display:flex;flex-direction:column;overflow:hidden}
   .chat-shell{display:flex;flex-direction:column;gap:10px;background:#121214;border:1px solid #22252b;border-radius:18px;padding:10px;flex:1;min-height:0}
   .chat-composer{display:flex;gap:8px;align-items:flex-end;background:#16181d;border:1px solid #2a2f3a;border-radius:18px;padding:10px}
-  .below-chat{margin-top:10px;background:#121214;border:1px solid #22252b;border-radius:14px;padding:10px;display:flex;flex-direction:column;gap:8px;max-height:34vh;overflow:auto}
+  .below-chat-dropdown{margin-top:10px;background:#121214;border:1px solid #22252b;border-radius:14px;overflow:hidden}
+  .below-chat-dropdown summary{cursor:pointer;list-style:none;padding:12px 14px;font-weight:600;user-select:none}
+  .below-chat-dropdown summary::-webkit-details-marker{display:none}
+  .below-chat-dropdown summary::after{content:'▾';float:right;color:#9aa3b7;transition:transform .2s ease}
+  .below-chat-dropdown:not([open]) summary::after{transform:rotate(-90deg)}
+  .below-chat{padding:0 10px 10px 10px;display:flex;flex-direction:column;gap:8px;max-height:34vh;overflow:auto;border-top:1px solid #22252b}
   .inline-row{display:flex;gap:6px;align-items:center}
   .inline-row input[type=text],.inline-row input[type=password]{flex:1}
   .compact-title{margin:0;font-size:14px}
@@ -82,8 +86,9 @@
       </div>
       <div id="chatStatus" class="status-pill"></div>
     </div>
-    <div class="below-chat">
-      <h3 class="compact-title">Quick controls</h3>
+    <details class="below-chat-dropdown">
+      <summary>Quick controls</summary>
+      <div class="below-chat">
       <div class="small">Password (required)</div>
       <input id="pw" type="password" placeholder="Password"/>
       <label class="switch"><input id="forceWeb" type="checkbox"/> Force web search before replies</label>
@@ -109,7 +114,8 @@
           <button id="closeTab">Close</button>
         </div>
       </div>
-    </div>
+      </div>
+    </details>
   </div>
 
   <div class="panel closed" id="right">
@@ -172,6 +178,7 @@ let tabsWindowReady = false;
 let chats = [];
 let activeChatId = null;
 const CHAT_STORAGE_KEY = 'ashen-chat-sessions-v1';
+const PREVIOUS_CHAT_TITLE = 'Previous chats';
 
 const TRUSTED_NEWS_DOMAINS = [
   'apnews.com','reuters.com','bbc.com','cnn.com','nytimes.com','washingtonpost.com','theguardian.com',
@@ -223,6 +230,31 @@ function makeChat(title = 'New Chat', messages = []) {
     updatedAt: new Date().toISOString(),
     messages
   };
+}
+
+function ensurePreviousChatsBucket() {
+  let previous = chats.find((chat) => chat.title === PREVIOUS_CHAT_TITLE);
+  if (!previous) {
+    previous = makeChat(PREVIOUS_CHAT_TITLE, []);
+    chats.push(previous);
+  }
+  return previous;
+}
+
+function archiveActiveChatToPrevious() {
+  const active = getActiveChat();
+  if (!active || active.title === PREVIOUS_CHAT_TITLE || !(active.messages || []).length) return;
+
+  const previous = ensurePreviousChatsBucket();
+  const block = [
+    `--- ${active.title || 'Untitled chat'} · ${new Date(active.updatedAt || Date.now()).toLocaleString()} ---`,
+    ...active.messages.map((entry) => `${entry.who}: ${entry.text}`),
+    ''
+  ];
+
+  previous.messages = previous.messages || [];
+  previous.messages.push({ who: 'System', text: block.join('\n') });
+  previous.updatedAt = new Date().toISOString();
 }
 
 function persistChats() {
@@ -307,9 +339,10 @@ function initializeChats() {
       title: chat.title || 'New Chat',
       updatedAt: chat.updatedAt || chat.createdAt || new Date().toISOString()
     }));
+    ensurePreviousChatsBucket();
     activeChatId = chats.some((c) => c.id === loaded.activeChatId) ? loaded.activeChatId : chats[0].id;
   } else {
-    const migrated = makeChat('Previous chats', []);
+    const migrated = makeChat(PREVIOUS_CHAT_TITLE, []);
     chats = [migrated];
     activeChatId = migrated.id;
     persistChats();
@@ -436,8 +469,11 @@ async function callWorker(payload, options = {}){
 
 if (newChatBtn) {
   newChatBtn.onclick = () => {
+    archiveActiveChatToPrevious();
+
+    const previous = ensurePreviousChatsBucket();
     const chat = makeChat('New Chat', []);
-    chats.unshift(chat);
+    chats = [chat, ...chats.filter((c) => c.id !== previous.id), previous];
     activeChatId = chat.id;
     persistChats();
     renderChatList();
@@ -507,7 +543,7 @@ openBtn.onclick = async () => {
   const res = await callWorker({ password: pw, command: { type:'open_tab', url, fetchNow: true, summarizeAfter: true, words: 100 } });
   if (res.error) { appendMsg('Error', res.error); return; }
   if (res.tab) {
-    appendMsg('System', `Opened tab ${res.tab.id} (${res.tab.finalUrl || res.tab.url})`);
+    appendMsg('System', `Opened: ${res.tab.finalUrl || res.tab.url}`);
     displayTabContent(res.tab);
   }
   if (res.tabs) renderTabs(res.tabs);
@@ -557,7 +593,6 @@ function renderTabs(tabs) {
     div.className = 'tab';
     div.dataset.tabId = t.id;
     div.innerHTML = `
-      <div class="tab-id">${escapeHtml(t.id)}</div>
       <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(t.title || t.finalUrl || t.url)}</div>
       <div class="small" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(t.finalUrl || t.url)}</div>
     `;
@@ -624,7 +659,6 @@ function ensureTabsWindow(forceFocus = false) {
     .popup-tab-main{min-width:0;text-align:left}
     .popup-tab-close{background:#2a2d36;color:#dbe4ff;border:none;border-radius:999px;width:24px;height:24px;line-height:24px;text-align:center;cursor:pointer;font-size:14px;font-weight:700;flex:0 0 auto}
     .popup-tab-close:hover{background:#dc2626;color:#fff}
-    .popup-tab .id{font-family:monospace;color:#9ad;font-size:11px}
     .popup-tab .title,.popup-tab .url{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .popup-tab .title{font-weight:600;margin-top:2px}
     .popup-tab .url{font-size:12px;color:#b9c3d4;margin-top:4px}
@@ -687,7 +721,6 @@ function renderTabsWindow() {
     item.className = `popup-tab ${tab.id === selectedTabId ? 'active' : ''}`;
     item.innerHTML = `
       <div class="popup-tab-main">
-        <div class="id">${escapeHtml(tab.id)}</div>
         <div class="title">${escapeHtml(tab.title || tab.finalUrl || tab.url || '(untitled)')}</div>
         <div class="url">${escapeHtml(tab.finalUrl || tab.url || '')}</div>
       </div>
@@ -726,7 +759,7 @@ function renderTabsWindow() {
     status.textContent = `${selected.title || targetUrl} — ${targetUrl}`;
   } else {
     frame.removeAttribute('src');
-    status.textContent = `${selected.id} has no URL yet.`;
+    status.textContent = 'Selected tab has no URL yet.';
   }
 }
 
@@ -770,7 +803,6 @@ function displayTabContent(tab) {
   showUniversalWebsiteEmbed(tab);
 
   const html = [];
-  html.push(`ID: ${tab.id}`);
   html.push(`Title: ${tab.title || '(no title)'}`);
   html.push(`URL: ${tab.finalUrl || tab.url}`);
   html.push(`Status: ${tab.status}`);
@@ -1047,7 +1079,7 @@ fetchTabBtn.onclick = async () => {
   const pw = pwEl.value; if(!pw) { alert('Password required'); return; }
   const res = await callWorker({ password: pw, command: { type:'fetch_tab', tabId: selectedTabId } });
   if (res.error) { appendMsg('Error', res.error); return; }
-  if (res.tab) appendMsg('System', `Fetched ${res.tab.id} (${res.tab.finalUrl || res.tab.url})`);
+  if (res.tab) appendMsg('System', `Fetched: ${res.tab.finalUrl || res.tab.url}`);
   if (res.tabs) renderTabs(res.tabs);
   if (res.console) renderConsole(res.console);
   if (res.tab) displayTabContent(res.tab);
@@ -1059,7 +1091,7 @@ summTabBtn.onclick = async () => {
   const pw = pwEl.value; if(!pw) { alert('Password required'); return; }
   const res = await callWorker({ password: pw, command: { type:'summarize_tab', tabId: selectedTabId, words: 120 }});
   if (res.error) { appendMsg('Error', res.error); return; }
-  if (res.result) appendMsg('System', `Summary for ${selectedTabId}: ${res.result.summary}`);
+  if (res.result) appendMsg('System', `Summary: ${res.result.summary}`);
   if (res.tab) displayTabContent(res.tab);
   if (res.tabs) renderTabs(res.tabs);
   if (res.console) renderConsole(res.console);
@@ -1071,7 +1103,7 @@ async function closeSelectedTab(tabId = selectedTabId) {
   const pw = pwEl.value; if(!pw) { alert('Password required'); return; }
   const res = await callWorker({ password: pw, command: { type:'close_tab', tabId }});
   if (res.error) { appendMsg('Error', res.error); return; }
-  appendMsg('System', `Closed ${tabId}`);
+  appendMsg('System', 'Closed the selected tab.');
   if (Array.isArray(res.tabs)) {
     renderTabs(res.tabs);
   } else {
