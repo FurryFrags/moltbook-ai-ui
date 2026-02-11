@@ -365,8 +365,6 @@ function scoreEvidenceItem(item) {
   if (/according to|reported|confirmed|official|statement|issued on/.test(t)) score += 1;
   if (/400 bad request|returned an error 400|target url returning a bad request|status code 4\d\d|status code 5\d\d/.test(t)) score -= 4;
   if (/not accurate|cannot verify|unconfirmed|likely an error|rumor|fake|satire|denied/.test(t)) score -= 2;
-  if (/no retrievable text|doesn't contain any factual information|if you provide a different snippet|i apologize, but there is no retrievable/.test(t)) score -= 3;
-  if (/threadreaderapp\.com\/?user\//.test(normalizedUrl)) score -= 2;
   if (!hostname) score -= 1;
   return score;
 }
@@ -405,19 +403,18 @@ function consolidateEvidence(evidence) {
 
 function extractGroundedSummary(rows) {
   if (!rows || !rows.length) {
-    return 'I couldn't find enough reliable web evidence to answer confidently yet.';
+    return 'I could not find enough reliable web evidence to answer confidently.';
   }
-  const viableRows = rows.filter((r) => !r.isBroken && (r.score >= 1 || r.trusted));
-  const primary = viableRows[0] || rows[0];
-  const title = primary.title || (primary.hostname ? `source on ${primary.hostname}` : 'top retrieved source');
-  const summary = primary.summary || 'no summary was available from the retrieved evidence.';
+  const primary = rows[0];
+  const title = primary.title || (primary.hostname ? `Source on ${primary.hostname}` : 'Top retrieved source');
+  const summary = primary.summary || 'No summary was available from the retrieved evidence.';
   const brokenCount = rows.filter(r => r.isBroken).length;
   const trustedCount = rows.filter(r => r.trusted).length;
   const caution = brokenCount > 0 || trustedCount === 0
-    ? 'Heads-up: evidence quality is mixed (broken links and/or weak sourcing), so treat this as tentative.'
+    ? 'Retrieved evidence quality is mixed (broken links and/or weak sourcing), so this should be treated as tentative.'
     : '';
   return [
-    `From the best live evidence I found, ${title}: ${summary}`,
+    `Based on the strongest retrieved evidence, ${title}: ${summary}`,
     caution
   ].filter(Boolean).join(' ');
 }
@@ -426,10 +423,10 @@ function buildGroundedReply(rawReply, evidence) {
   const { bullets, meta, top } = consolidateEvidence(evidence);
   if (!bullets.length) return { text: rawReply || '', metaHtml: '' };
 
-  const genericReply = /according to my training data|since my training data only goes up to|i don't have any information|i don't have the capability to browse|cannot browse|no retrievable text|provide a different snippet/i.test(rawReply || '');
+  const genericReply = /according to my training data|since my training data only goes up to|i don't have any information|i don't have the capability to browse|cannot browse/i.test(rawReply || '');
   const header = genericReply
-    ? 'Grounded answer (live evidence first ✨):'
-    : 'Grounded answer (cross-checked with live evidence ✨):';
+    ? 'Grounded answer (built from live retrieval evidence):'
+    : 'Grounded answer (cross-checked against live retrieval evidence):';
 
   const groundedSummary = extractGroundedSummary(top);
 
@@ -437,6 +434,7 @@ function buildGroundedReply(rawReply, evidence) {
     header,
     '',
     `Answer: ${groundedSummary}`,
+    (!genericReply && rawReply ? `\nModel draft (for reference): ${rawReply}` : ''),
     '',
     'Evidence highlights:',
     ...bullets
@@ -444,8 +442,8 @@ function buildGroundedReply(rawReply, evidence) {
 
   const riskClass = (meta.contradictionRisk || meta.lowReliability || meta.confidence < 50) ? 'answer-warn' : 'answer-ok';
   const riskLabel = (meta.contradictionRisk || meta.lowReliability || meta.confidence < 50)
-    ? 'Conflicting and/or low-quality evidence detected — keep this tentative.'
-    : 'Evidence looks reasonably consistent.';
+    ? 'Conflicting and/or low-quality evidence detected — treat claims as tentative.'
+    : 'Evidence appears reasonably consistent.';
 
   const metaHtml = `<div class="answer-meta ${riskClass}">Confidence estimate: ${meta.confidence}% · ${riskLabel}</div>`;
   return { text: combined, metaHtml };
