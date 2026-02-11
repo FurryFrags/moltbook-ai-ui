@@ -25,6 +25,7 @@
   .tab-id{font-family:monospace;color:#9ad;display:block;margin-bottom:4px;font-size:11px}
   .tabs-strip{display:flex;gap:6px;overflow:auto;padding:6px 6px 0 6px;background:#141418;border-radius:10px 10px 0 0;border:1px solid var(--border);border-bottom:none}
   .tabs-actionbar{display:flex;gap:6px;padding:8px;background:#141418;border:1px solid var(--border);border-top:none;border-bottom:none}
+  .tabs-window-launch{margin-top:8px}
   .console{font-family:monospace;font-size:12px;background:#060606;padding:8px;border-radius:8px;height:40vh;overflow:auto;border:1px solid #1f1f24}
   .small{font-size:12px;color:#aaa}
   #replyArea{display:flex;flex-direction:column;gap:8px;overflow:auto;padding:8px 4px;flex:1;min-height:0}
@@ -88,6 +89,7 @@
       <button id="summTab">Summarize</button>
       <button id="closeTab">Close</button>
     </div>
+    <button id="openTabsWindow" class="tabs-window-launch">Open Large Tabs Window</button>
     <div id="embedContainer" style="display:none"></div>
     <div id="tabContent">No tab selected.</div>
   </div>
@@ -135,6 +137,7 @@ const refreshTabsBtn = document.getElementById('refreshTabs');
 const fetchTabBtn = document.getElementById('fetchTab');
 const summTabBtn = document.getElementById('summTab');
 const closeTabBtn = document.getElementById('closeTab');
+const openTabsWindowBtn = document.getElementById('openTabsWindow');
 const forceWeb = document.getElementById('forceWeb');
 const evidenceList = document.getElementById('evidenceList');
 const liveMode = document.getElementById('liveMode');
@@ -156,6 +159,8 @@ let embedFallbackTimer = null;
 let cleanupUniversalEmbed = null;
 let activeChatController = null;
 let chatInFlight = false;
+let tabsWindow = null;
+let tabsWindowReady = false;
 const chatHistory = [];
 
 const TRUSTED_NEWS_DOMAINS = [
@@ -458,6 +463,7 @@ function renderTabs(tabs) {
       for (const el of tabsList.querySelectorAll('.tab')) el.classList.remove('active');
       div.classList.add('active');
       displayTabContent(t);
+      renderTabsWindow();
       ensureLivePolling();
     };
     if (t.id === selectedTabId) div.classList.add('active');
@@ -482,7 +488,133 @@ function renderTabs(tabs) {
   }
 
   ensureLivePolling();
+  renderTabsWindow();
 }
+
+function ensureTabsWindow(forceFocus = false) {
+  if (tabsWindow && !tabsWindow.closed) {
+    if (forceFocus) tabsWindow.focus();
+    return tabsWindow;
+  }
+
+  tabsWindow = window.open('', 'moltbook-tabs-window', 'popup=yes,width=1400,height=900,resizable=yes,scrollbars=yes');
+  if (!tabsWindow) {
+    alert('Popup blocked. Allow popups for this site to open the large tabs window.');
+    return null;
+  }
+
+  tabsWindow.document.write(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>MoltBook Tabs Viewer</title>
+  <style>
+    :root{--bg:#0f0f10;--panel:#111;--border:#232326;--accent:#2f6dd1;--muted:#9ca3af}
+    html,body{height:100%;margin:0;background:var(--bg);color:#eee;font-family:Inter,system-ui,sans-serif}
+    body{display:flex;flex-direction:column;padding:14px;gap:10px;box-sizing:border-box}
+    .toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .toolbar button{background:var(--accent);color:#fff;border:none;padding:8px 12px;border-radius:9px;cursor:pointer;font-weight:600}
+    .toolbar .muted{font-size:12px;color:var(--muted)}
+    #popupTabsStrip{display:flex;gap:8px;overflow:auto;padding:6px;background:#141418;border:1px solid var(--border);border-radius:10px 10px 0 0}
+    .popup-tab{padding:10px 12px;border:1px solid #2a2d36;border-bottom:none;border-radius:10px 10px 0 0;background:#17171b;min-width:230px;cursor:pointer}
+    .popup-tab.active{background:#0b0b0b;border-color:var(--accent);box-shadow:inset 0 -2px 0 var(--accent)}
+    .popup-tab .id{font-family:monospace;color:#9ad;font-size:11px}
+    .popup-tab .title,.popup-tab .url{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .popup-tab .title{font-weight:600;margin-top:2px}
+    .popup-tab .url{font-size:12px;color:#b9c3d4;margin-top:4px}
+    #popupFrameWrap{flex:1;min-height:0;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:0 0 12px 12px;overflow:hidden;background:#070707}
+    #popupFrame{flex:1;border:none;width:100%;background:#000}
+    #popupStatus{padding:8px 10px;font-size:12px;color:var(--muted);border-top:1px solid var(--border);background:#101216}
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button id="popupRefresh">Refresh Tabs</button>
+    <button id="popupOpenExternal">Open Current in New Tab</button>
+    <span class="muted">Chrome-style strip + large viewer</span>
+  </div>
+  <div id="popupTabsStrip"></div>
+  <div id="popupFrameWrap">
+    <iframe id="popupFrame" referrerpolicy="no-referrer"></iframe>
+    <div id="popupStatus">No tab selected.</div>
+  </div>
+</body>
+</html>`);
+  tabsWindow.document.close();
+  tabsWindowReady = true;
+
+  tabsWindow.addEventListener('beforeunload', () => {
+    tabsWindowReady = false;
+  });
+
+  const refreshBtn = tabsWindow.document.getElementById('popupRefresh');
+  const externalBtn = tabsWindow.document.getElementById('popupOpenExternal');
+  refreshBtn.onclick = () => refreshTabsBtn.click();
+  externalBtn.onclick = () => {
+    const selected = lastTabs.find(t => t.id === selectedTabId);
+    const target = selected?.finalUrl || selected?.url;
+    if (target) window.open(target, '_blank', 'noopener,noreferrer');
+  };
+
+  if (forceFocus) tabsWindow.focus();
+  return tabsWindow;
+}
+
+function renderTabsWindow() {
+  if (!tabsWindow || tabsWindow.closed || !tabsWindowReady) return;
+
+  const popupDoc = tabsWindow.document;
+  const strip = popupDoc.getElementById('popupTabsStrip');
+  const frame = popupDoc.getElementById('popupFrame');
+  const status = popupDoc.getElementById('popupStatus');
+  if (!strip || !frame || !status) return;
+
+  strip.innerHTML = '';
+  const list = lastTabs.slice().reverse();
+  list.forEach((tab) => {
+    const item = popupDoc.createElement('button');
+    item.type = 'button';
+    item.className = `popup-tab ${tab.id === selectedTabId ? 'active' : ''}`;
+    item.innerHTML = `
+      <div class="id">${escapeHtml(tab.id)}</div>
+      <div class="title">${escapeHtml(tab.title || tab.finalUrl || tab.url || '(untitled)')}</div>
+      <div class="url">${escapeHtml(tab.finalUrl || tab.url || '')}</div>
+    `;
+    item.onclick = () => {
+      selectedTabId = tab.id;
+      const selectedInMain = tabsList.querySelector(`[data-tab-id="${CSS.escape(tab.id)}"]`);
+      for (const el of tabsList.querySelectorAll('.tab')) el.classList.remove('active');
+      if (selectedInMain) selectedInMain.classList.add('active');
+      const liveTab = lastTabs.find(t => t.id === tab.id) || tab;
+      displayTabContent(liveTab);
+      renderTabsWindow();
+      ensureLivePolling();
+    };
+    strip.appendChild(item);
+  });
+
+  const selected = lastTabs.find(t => t.id === selectedTabId) || null;
+  if (!selected) {
+    frame.removeAttribute('src');
+    status.textContent = 'No tab selected.';
+    return;
+  }
+
+  const targetUrl = selected.finalUrl || selected.url || '';
+  if (targetUrl) {
+    if (frame.src !== targetUrl) frame.src = targetUrl;
+    status.textContent = `${selected.title || targetUrl} — ${targetUrl}`;
+  } else {
+    frame.removeAttribute('src');
+    status.textContent = `${selected.id} has no URL yet.`;
+  }
+}
+
+openTabsWindowBtn.onclick = () => {
+  const win = ensureTabsWindow(true);
+  if (!win) return;
+  renderTabsWindow();
+};
 
 function renderEvidence(evidence) {
   if (!evidence || !evidence.length) {
@@ -799,6 +931,7 @@ fetchTabBtn.onclick = async () => {
   if (res.tabs) renderTabs(res.tabs);
   if (res.console) renderConsole(res.console);
   if (res.tab) displayTabContent(res.tab);
+  renderTabsWindow();
 };
 
 summTabBtn.onclick = async () => {
@@ -810,6 +943,7 @@ summTabBtn.onclick = async () => {
   if (res.tab) displayTabContent(res.tab);
   if (res.tabs) renderTabs(res.tabs);
   if (res.console) renderConsole(res.console);
+  renderTabsWindow();
 };
 
 closeTabBtn.onclick = async () => {
@@ -830,6 +964,7 @@ closeTabBtn.onclick = async () => {
     }
   }
   if (res.console) renderConsole(res.console);
+  renderTabsWindow();
 };
 
 liveMode.onchange = () => {
