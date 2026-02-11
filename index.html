@@ -22,6 +22,8 @@
   #embedContainer { width:100%; height:420px; background:#000; border-radius:6px; overflow:hidden; position:relative; }
   iframe.embed { width:100%; height:100%; border:0; display:block; }
   .embed-controls{display:flex;gap:8px;margin-top:8px}
+  label.switch { display:flex; gap:8px; align-items:center; cursor:pointer; }
+  input[type=checkbox] { width:16px; height:16px; }
 </style>
 </head>
 <body>
@@ -48,6 +50,11 @@
     <div style="margin-top:12px">
       <h3>Conversation</h3>
       <div id="messages"></div>
+    </div>
+
+    <div style="margin-top:12px">
+      <label class="switch"><input id="forceWeb" type="checkbox"/> Force web search & consolidate evidence before answering</label>
+      <div class="small">When checked, Ashen will actively run the retrieval pipeline for info requests.</div>
     </div>
   </div>
 
@@ -92,6 +99,7 @@ const refreshTabsBtn = document.getElementById('refreshTabs');
 const fetchTabBtn = document.getElementById('fetchTab');
 const summTabBtn = document.getElementById('summTab');
 const closeTabBtn = document.getElementById('closeTab');
+const forceWeb = document.getElementById('forceWeb');
 
 let selectedTabId = null;
 let lastTabs = [];
@@ -124,7 +132,7 @@ sendBtn.onclick = async () => {
   if(!text) return;
   appendMsg('You', text);
   inputEl.value = '';
-  const res = await callWorker({ password: pw, message: text });
+  const res = await callWorker({ password: pw, message: text, forceWeb: forceWeb.checked });
   if (res.error) { appendMsg('Error', res.error); return; }
   if (res.reply) {
     replyArea.textContent = res.reply;
