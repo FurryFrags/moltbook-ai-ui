@@ -6,10 +6,15 @@
 <style>
   :root{--bg:#0f0f10;--panel:#111;--muted:#888;--accent:#1f6feb;--border:#232326}
   body{font-family:Inter,system-ui,sans-serif;margin:0;background:var(--bg);color:#eee}
-  #app{display:grid;grid-template-columns:320px minmax(0,1fr);gap:14px;padding:14px;height:100vh;box-sizing:border-box;position:relative}
+  #app{display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;padding:14px;height:100vh;box-sizing:border-box;position:relative}
   .panel{background:var(--panel);border-radius:14px;padding:14px;overflow:auto;border:1px solid #1c1c20}
   .panel h3{margin:0 0 8px 0}
-  #left{display:flex;flex-direction:column;gap:12px}
+  #chatSidebar{display:flex;flex-direction:column;gap:10px}
+  #chatList{display:flex;flex-direction:column;gap:8px;overflow:auto;padding-right:4px}
+  .chat-item{padding:10px;border:1px solid #2a2f3a;background:#141418;border-radius:10px;cursor:pointer;text-align:left;color:#d7dceb}
+  .chat-item.active{border-color:#2f6dd1;background:#101c35}
+  .chat-item-title{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chat-item-meta{font-size:11px;color:#9aa3b7;margin-top:4px}
   .controls{display:flex;gap:6px;flex-wrap:wrap}
   #messages{max-height:34vh;overflow:auto;padding-right:4px}
   .msg{padding:10px 12px;border-radius:14px;margin:6px 0;word-break:break-word;line-height:1.4;max-width:82%}
@@ -47,6 +52,10 @@
   #center{display:flex;flex-direction:column;overflow:hidden}
   .chat-shell{display:flex;flex-direction:column;gap:10px;background:#121214;border:1px solid #22252b;border-radius:18px;padding:10px;flex:1;min-height:0}
   .chat-composer{display:flex;gap:8px;align-items:flex-end;background:#16181d;border:1px solid #2a2f3a;border-radius:18px;padding:10px}
+  .below-chat{margin-top:10px;background:#121214;border:1px solid #22252b;border-radius:14px;padding:10px;display:flex;flex-direction:column;gap:8px;max-height:34vh;overflow:auto}
+  .inline-row{display:flex;gap:6px;align-items:center}
+  .inline-row input[type=text],.inline-row input[type=password]{flex:1}
+  .compact-title{margin:0;font-size:14px}
   .drawer-toggle{position:absolute;top:14px;right:14px;z-index:15}
   #right{position:absolute;right:14px;top:58px;bottom:14px;width:340px;z-index:20;transition:transform .25s ease,opacity .25s ease;box-shadow:0 6px 24px rgba(0,0,0,.45)}
   #right.closed{transform:translateX(380px);opacity:0;pointer-events:none}
@@ -57,41 +66,10 @@
 <div id="app">
   <button class="drawer-toggle" id="toggleDrawer">Logs & Console</button>
 
-  <div class="panel" id="left">
-    <h3>Ashen Controls + Browser</h3>
-    <div class="small">Password (required)</div>
-    <input id="pw" type="password" placeholder="Password"/>
-
-    <label class="switch"><input id="forceWeb" type="checkbox"/> Force web search & consolidate evidence before answering</label>
-    <div class="small">When checked, Ashen actively runs retrieval before replying.</div>
-
-    <label class="switch"><input id="liveMode" type="checkbox"/> Live internet mode (auto-refresh selected tab)</label>
-    <div class="controls">
-      <input id="liveSeconds" type="text" value="60" placeholder="seconds" />
-      <button id="browseNowBtn">Browse URL now</button>
-    </div>
-
-    <div>
-      <h3>Open URL</h3>
-      <input id="openUrl" type="text" placeholder="https://example.com"/>
-      <div style="height:6px"></div>
-      <button id="openBtn">Open Tab</button>
-    </div>
-
-    <h3>Ashen Evidence</h3>
-    <div id="evidenceList">No web evidence yet. Toggle "Force web search" and send a query to gather evidence.</div>
-
-    <h3>Open Tabs</h3>
-    <div class="tabs-strip" id="tabsList"></div>
-    <div class="tabs-actionbar">
-      <button id="refreshTabs">Refresh Tabs</button>
-      <button id="fetchTab">Fetch</button>
-      <button id="summTab">Summarize</button>
-      <button id="closeTab">Close</button>
-    </div>
-    <button id="openTabsWindow" class="tabs-window-launch">Open Large Tabs Window</button>
-    <div id="embedContainer" style="display:none"></div>
-    <div id="tabContent">No tab selected.</div>
+  <div class="panel" id="chatSidebar">
+    <h3>Chats</h3>
+    <button id="newChatBtn">New Chat</button>
+    <div id="chatList"></div>
   </div>
 
   <div class="panel" id="center">
@@ -103,6 +81,34 @@
         <button id="sendBtn">Send</button>
       </div>
       <div id="chatStatus" class="status-pill"></div>
+    </div>
+    <div class="below-chat">
+      <h3 class="compact-title">Quick controls</h3>
+      <div class="small">Password (required)</div>
+      <input id="pw" type="password" placeholder="Password"/>
+      <label class="switch"><input id="forceWeb" type="checkbox"/> Force web search before replies</label>
+      <label class="switch"><input id="liveMode" type="checkbox"/> Live internet mode</label>
+      <div class="inline-row">
+        <input id="liveSeconds" type="text" value="60" placeholder="seconds" />
+        <button id="browseNowBtn">Browse now</button>
+      </div>
+      <div class="inline-row">
+        <input id="openUrl" type="text" placeholder="https://example.com"/>
+        <button id="openBtn">Open</button>
+      </div>
+      <button id="openTabsWindow" class="tabs-window-launch">Open Large Tabs Window</button>
+      <div id="evidenceList">No web evidence yet. Toggle "Force web search" and send a query to gather evidence.</div>
+      <div id="embedContainer" style="display:none"></div>
+      <div id="tabContent">No tab selected.</div>
+      <div style="display:none">
+        <div class="tabs-strip" id="tabsList"></div>
+        <div class="tabs-actionbar">
+          <button id="refreshTabs">Refresh Tabs</button>
+          <button id="fetchTab">Fetch</button>
+          <button id="summTab">Summarize</button>
+          <button id="closeTab">Close</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -129,6 +135,8 @@ const openBtn = document.getElementById('openBtn');
 const openUrl = document.getElementById('openUrl');
 const messagesDiv = document.getElementById('messages');
 const replyArea = document.getElementById('replyArea');
+const chatListEl = document.getElementById('chatList');
+const newChatBtn = document.getElementById('newChatBtn');
 const tabContentDiv = document.getElementById('tabContent');
 const embedContainer = document.getElementById('embedContainer');
 const tabsList = document.getElementById('tabsList');
@@ -161,7 +169,9 @@ let activeChatController = null;
 let chatInFlight = false;
 let tabsWindow = null;
 let tabsWindowReady = false;
-const chatHistory = [];
+let chats = [];
+let activeChatId = null;
+const CHAT_STORAGE_KEY = 'ashen-chat-sessions-v1';
 
 const TRUSTED_NEWS_DOMAINS = [
   'apnews.com','reuters.com','bbc.com','cnn.com','nytimes.com','washingtonpost.com','theguardian.com',
@@ -205,29 +215,110 @@ function roleClass(who) {
   return 'system';
 }
 
+function makeChat(title = 'New Chat', messages = []) {
+  return {
+    id: (crypto?.randomUUID ? crypto.randomUUID() : `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`),
+    title,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    messages
+  };
+}
+
+function persistChats() {
+  localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify({ chats, activeChatId }));
+}
+
+function getActiveChat() {
+  return chats.find((chat) => chat.id === activeChatId) || null;
+}
+
+function updateChatTitle(chat) {
+  const userEntry = (chat.messages || []).find((entry) => String(entry.who || '').toLowerCase() === 'you');
+  if (!userEntry || chat.title !== 'New Chat') return;
+  chat.title = String(userEntry.text || '').trim().slice(0, 42) || 'New Chat';
+}
+
 function renderReplyTranscript() {
+  const active = getActiveChat();
   replyArea.innerHTML = '';
-  chatHistory.forEach((entry) => {
+  (active?.messages || []).forEach((entry) => {
     const bubble = document.createElement('div');
     bubble.className = `msg ${roleClass(entry.who)}`;
     bubble.innerHTML = `<b>${escapeHtml(entry.who)}:</b> ${escapeHtml(entry.text).replace(/\n/g, '<br/>')}`;
     replyArea.appendChild(bubble);
   });
   replyArea.scrollTop = replyArea.scrollHeight;
+
+  messagesDiv.innerHTML = '';
+  (active?.messages || []).forEach((entry) => {
+    const d = document.createElement('div');
+    d.className = `msg ${roleClass(entry.who)}`;
+    d.innerHTML = `<b>${escapeHtml(entry.who)}:</b> ${escapeHtml(entry.text).replace(/\n/g, '<br/>')}`;
+    messagesDiv.appendChild(d);
+  });
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+function renderChatList() {
+  chatListEl.innerHTML = '';
+  chats.slice().sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)).forEach((chat) => {
+    const item = document.createElement('button');
+    item.className = `chat-item ${chat.id === activeChatId ? 'active' : ''}`;
+    item.type = 'button';
+    item.innerHTML = `
+      <div class="chat-item-title">${escapeHtml(chat.title || 'New Chat')}</div>
+      <div class="chat-item-meta">${(chat.messages || []).length} message${(chat.messages || []).length === 1 ? '' : 's'}</div>
+    `;
+    item.onclick = () => {
+      activeChatId = chat.id;
+      persistChats();
+      renderChatList();
+      renderReplyTranscript();
+    };
+    chatListEl.appendChild(item);
+  });
 }
 
 function appendMsg(who,text){
+  const active = getActiveChat();
+  if (!active) return;
   const entry = { who, text: String(text || '') };
-  chatHistory.push(entry);
-
-  const d=document.createElement('div');
-  d.className=`msg ${roleClass(who)}`;
-  d.innerHTML=`<b>${escapeHtml(who)}:</b> ${escapeHtml(entry.text).replace(/\n/g,'<br/>')}`;
-  messagesDiv.appendChild(d);
-  messagesDiv.scrollTop = messagesDiv.scrollHeight;
-
+  active.messages.push(entry);
+  active.updatedAt = new Date().toISOString();
+  updateChatTitle(active);
+  persistChats();
+  renderChatList();
   renderReplyTranscript();
 }
+
+function initializeChats() {
+  let loaded = null;
+  try {
+    loaded = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY) || 'null');
+  } catch {
+    loaded = null;
+  }
+
+  if (loaded?.chats?.length) {
+    chats = loaded.chats.map((chat) => ({
+      ...chat,
+      messages: Array.isArray(chat.messages) ? chat.messages : [],
+      title: chat.title || 'New Chat',
+      updatedAt: chat.updatedAt || chat.createdAt || new Date().toISOString()
+    }));
+    activeChatId = chats.some((c) => c.id === loaded.activeChatId) ? loaded.activeChatId : chats[0].id;
+  } else {
+    const migrated = makeChat('Previous chats', []);
+    chats = [migrated];
+    activeChatId = migrated.id;
+    persistChats();
+  }
+
+  renderChatList();
+  renderReplyTranscript();
+}
+
 function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function scoreEvidenceItem(item) {
@@ -341,6 +432,18 @@ async function callWorker(payload, options = {}){
   } catch (e) {
     return { error: String(e) };
   }
+}
+
+if (newChatBtn) {
+  newChatBtn.onclick = () => {
+    const chat = makeChat('New Chat', []);
+    chats.unshift(chat);
+    activeChatId = chat.id;
+    persistChats();
+    renderChatList();
+    renderReplyTranscript();
+    chatStatus.textContent = 'Started a new chat';
+  };
 }
 
 sendBtn.onclick = async () => {
@@ -1122,6 +1225,8 @@ inputEl.addEventListener('keydown', (event) => {
     sendBtn.click();
   }
 });
+
+initializeChats();
 
 // initial load
 (async ()=> {
