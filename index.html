@@ -139,6 +139,7 @@ function scoreEvidenceItem(item) {
   if (item?.url && /^https?:\/\//i.test(item.url)) score += 2;
   if (/reuters|apnews|bbc|france24|cnn|nytimes|washingtonpost|abcnews|lemonde|elpais/.test(t)) score += 2;
   if (/according to|reported|confirmed|official|statement|issued on/.test(t)) score += 1;
+  if (/400 bad request|returned an error 400|target url returning a bad request/.test(t)) score -= 3;
   if (/not accurate|cannot verify|unconfirmed|likely an error|rumor|fake|satire|denied/.test(t)) score -= 2;
   return score;
 }
@@ -166,22 +167,45 @@ function consolidateEvidence(evidence) {
     contradictionRisk: cautionCount > 0,
     confidence: top.length ? Math.max(0, Math.min(100, 55 + top[0].score * 10 - cautionCount * 8)) : 0
   };
-  return { bullets, meta };
+  return { bullets, meta, top };
+}
+
+function extractGroundedSummary(rows) {
+  if (!rows || !rows.length) {
+    return 'I could not find enough reliable web evidence to answer confidently.';
+  }
+  const primary = rows[0];
+  const title = primary.title || 'Top retrieved source';
+  const summary = primary.summary || 'No summary was available from the retrieved evidence.';
+  const hasBrokenSources = rows.some(r => /400 bad request|returned an error 400/.test((r.summary || '').toLowerCase()));
+  const caution = hasBrokenSources
+    ? 'Some retrieved links appear broken (400 errors), so details should be treated cautiously.'
+    : '';
+  return [
+    `Based on the strongest retrieved evidence, ${title}: ${summary}`,
+    caution
+  ].filter(Boolean).join(' ');
 }
 
 function buildGroundedReply(rawReply, evidence) {
-  const { bullets, meta } = consolidateEvidence(evidence);
+  const { bullets, meta, top } = consolidateEvidence(evidence);
   if (!bullets.length) return { text: rawReply || '', metaHtml: '' };
 
-  const genericReply = /according to my training data|i don't have the capability to browse|cannot browse/i.test(rawReply || '');
+  const genericReply = /according to my training data|since my training data only goes up to|i don't have any information|i don't have the capability to browse|cannot browse/i.test(rawReply || '');
   const header = genericReply
     ? 'Grounded answer (built from live retrieval evidence):'
     : 'Grounded answer (cross-checked against live retrieval evidence):';
 
+  const groundedSummary = genericReply
+    ? extractGroundedSummary(top)
+    : null;
+
   const combined = [
     header,
     '',
-    rawReply ? `Model draft: ${rawReply}` : 'Model draft: (empty)',
+    genericReply
+      ? `Answer: ${groundedSummary}`
+      : (rawReply ? `Model draft: ${rawReply}` : 'Model draft: (empty)'),
     '',
     'Evidence highlights:',
     ...bullets
