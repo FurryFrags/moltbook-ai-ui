@@ -451,7 +451,12 @@ function normalizeEmbeddableUrl(url) {
 function toMirrorUrl(url) {
   const normalized = normalizeEmbeddableUrl(url);
   if (!normalized) return '';
-  return `https://r.jina.ai/http://${normalized.replace(/^https?:\/\//i,'')}`;
+  try {
+    const parsed = new URL(normalized);
+    return `https://r.jina.ai/${parsed.protocol}//${parsed.host}${parsed.pathname}${parsed.search}`;
+  } catch (_err) {
+    return '';
+  }
 }
 
 function showUniversalWebsiteEmbed(tab) {
@@ -497,9 +502,14 @@ function showUniversalWebsiteEmbed(tab) {
   };
   const useMirror = (manual = false) => {
     if (manual) userManuallySwitched = true;
+    const mirrorUrl = toMirrorUrl(targetUrl);
+    if (!mirrorUrl) {
+      note.textContent = 'Mirror mode unavailable for this URL. You can keep using Direct or Open.';
+      return;
+    }
     isDirectMode = false;
     switched = true;
-    iframe.src = toMirrorUrl(targetUrl);
+    iframe.src = mirrorUrl;
     note.textContent = 'Viewing: mirror mode (r.jina.ai) for sites that block iframes.';
   };
 
