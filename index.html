@@ -96,7 +96,7 @@
       <input id="pw" type="password" placeholder="Password"/>
       <label class="switch"><input id="liveMode" type="checkbox"/> Live internet mode</label>
       <div class="inline-row">
-        <input id="liveSeconds" type="text" value="60" placeholder="seconds" />
+        <input id="liveSeconds" type="text" value="120" placeholder="seconds" />
         <button id="browseNowBtn">Browse now</button>
       </div>
       <div class="inline-row">
@@ -165,6 +165,9 @@ const closeDrawerBtn = document.getElementById('closeDrawer');
 
 let selectedTabId = null;
 let lastTabs = [];
+let lastTabsSignature = "";
+const liveTabMetaKeys = new Map();
+const renderedTabKeys = new Map();
 let scWidget = null; // SoundCloud widget instance
 let liveTimer = null;
 let liveInFlight = false;
@@ -682,6 +685,15 @@ function buildChatContextSnippet(chat, maxMessages = 8, maxChars = 1800, maxToke
   return rows.join('\n');
 }
 
+/**
+ * Worker API command contract used by this UI:
+ * - open_tab
+ * - list_tabs
+ * - fetch_tab
+ * - check_tab_update (metadata-only live refresh check)
+ * - summarize_tab
+ * - close_tab
+ */
 async function callWorker(payload, options = {}){
   try {
     const headers = { 'Content-Type':'application/json' };
@@ -858,8 +870,62 @@ refreshTabsBtn.onclick = async () => {
   if (res.console) renderConsole(res.console);
 };
 
+function buildTabMetaKey(source) {
+  if (!source) return '';
+  const etag = source.etag || source.eTag || '';
+  const hash = source.hash || source.contentHash || source.revisionHash || '';
+  const updatedAt = source.updatedAt || source.lastFetchedAt || '';
+  const status = source.status || '';
+  return [etag, hash, updatedAt, status].join('|');
+}
+
+function buildTabRenderKey(tab) {
+  if (!tab || !tab.id) return '';
+  const embedUrl = tab?.embed?.embedUrl || '';
+  return [
+    buildTabMetaKey(tab),
+    tab.lastFetchedAt || '',
+    tab.summary || '',
+    tab.content || '',
+    tab.finalUrl || tab.url || '',
+    embedUrl
+  ].join('|');
+}
+
+function updateCachedTabKeys(tab) {
+  if (!tab || !tab.id) return;
+  const renderKey = buildTabRenderKey(tab);
+  if (renderKey) renderedTabKeys.set(tab.id, renderKey);
+  const metaKey = buildTabMetaKey(tab);
+  if (metaKey) liveTabMetaKeys.set(tab.id, metaKey);
+}
+
+function extractTabUpdateMetadata(res) {
+  if (!res || typeof res !== 'object') return null;
+  return res.update || res.metadata || res.meta || res.tabMeta || res.tab_update || null;
+}
+
+function computeTabsSignature(tabs) {
+  return (tabs || []).map((tab) => [
+    tab.id,
+    tab.title || '',
+    tab.finalUrl || tab.url || '',
+    tab.status || '',
+    tab.lastFetchedAt || '',
+    buildTabMetaKey(tab)
+  ].join('::')).join('||');
+}
+
+function maybeRenderTabs(tabs) {
+  const nextSignature = computeTabsSignature(tabs || []);
+  if (nextSignature === lastTabsSignature) return false;
+  renderTabs(tabs || []);
+  return true;
+}
+
 function renderTabs(tabs) {
   lastTabs = tabs || [];
+  lastTabsSignature = computeTabsSignature(lastTabs);
   tabsList.innerHTML = '';
   const frag = document.createDocumentFragment();
 
@@ -1068,6 +1134,8 @@ function renderEvidence(evidence) {
 // render embed player if available (SoundCloud support)
 function displayTabContent(tab) {
   if (!tab) { hideEmbed(); tabContentDiv.textContent = 'No tab selected.'; return; }
+
+  updateCachedTabKeys(tab);
 
   // If embed metadata present (from worker), render the embed player
   if (tab.embed && tab.embed.type === 'soundcloud' && tab.embed.embedUrl) {
@@ -1466,21 +1534,59 @@ async function refreshSelectedTab() {
 
   liveInFlight = true;
   try {
-    const res = await callWorker({
+    const checkRes = await callWorker({
+      password: pw,
+      command: { type:'check_tab_update', tabId: selectedTabId },
+      liveInternet: true,
+      requestedAt: new Date().toISOString()
+    });
+
+    if (checkRes.error) {
+      liveFailureCount += 1;
+      if (isRateLimitLikeError(checkRes.error)) {
+        const cooldownMs = Math.min(30 * 60 * 1000, getLiveBaseIntervalMs() * 12);
+        liveBackoffUntil = Date.now() + cooldownMs;
+        appendMsg('System', `Live refresh paused due to remote rate limiting. Retrying in ~${Math.ceil(cooldownMs / 60000)} min.`);
+      } else {
+        appendMsg('System', `Live refresh failed: ${checkRes.error}`);
+      }
+      scheduleNextLiveRefresh();
+      return;
+    }
+
+    if (checkRes.console) renderConsole(checkRes.console);
+
+    const meta = extractTabUpdateMetadata(checkRes) || {};
+    const metadataKey = buildTabMetaKey(meta);
+    const priorMetadataKey = liveTabMetaKeys.get(selectedTabId) || '';
+    const metadataChanged = metadataKey ? metadataKey !== priorMetadataKey : false;
+    const hasChanged = typeof meta.changed === 'boolean'
+      ? meta.changed
+      : (metadataChanged || /changed|updated/i.test(String(meta.status || '')));
+
+    if (!hasChanged) {
+      if (metadataKey) liveTabMetaKeys.set(selectedTabId, metadataKey);
+      liveFailureCount = 0;
+      liveBackoffUntil = 0;
+      scheduleNextLiveRefresh();
+      return;
+    }
+
+    const fetchRes = await callWorker({
       password: pw,
       command: { type:'fetch_tab', tabId: selectedTabId },
       liveInternet: true,
       requestedAt: new Date().toISOString()
     });
 
-    if (res.error) {
+    if (fetchRes.error) {
       liveFailureCount += 1;
-      if (isRateLimitLikeError(res.error)) {
+      if (isRateLimitLikeError(fetchRes.error)) {
         const cooldownMs = Math.min(30 * 60 * 1000, getLiveBaseIntervalMs() * 12);
         liveBackoffUntil = Date.now() + cooldownMs;
         appendMsg('System', `Live refresh paused due to remote rate limiting. Retrying in ~${Math.ceil(cooldownMs / 60000)} min.`);
       } else {
-        appendMsg('System', `Live refresh failed: ${res.error}`);
+        appendMsg('System', `Live refresh failed: ${fetchRes.error}`);
       }
       scheduleNextLiveRefresh();
       return;
@@ -1488,11 +1594,18 @@ async function refreshSelectedTab() {
 
     liveFailureCount = 0;
     liveBackoffUntil = 0;
-    if (res.tab) {
-      displayTabContent(res.tab);
+
+    if (fetchRes.tab) {
+      const nextRenderKey = buildTabRenderKey(fetchRes.tab);
+      const previousRenderKey = renderedTabKeys.get(fetchRes.tab.id) || '';
+      if (!nextRenderKey || nextRenderKey !== previousRenderKey) {
+        displayTabContent(fetchRes.tab);
+      } else {
+        updateCachedTabKeys(fetchRes.tab);
+      }
     }
-    if (res.tabs) renderTabs(res.tabs);
-    if (res.console) renderConsole(res.console);
+    if (fetchRes.tabs) maybeRenderTabs(fetchRes.tabs);
+    if (fetchRes.console) renderConsole(fetchRes.console);
     scheduleNextLiveRefresh();
   } catch (err) {
     liveFailureCount += 1;
@@ -1502,6 +1615,7 @@ async function refreshSelectedTab() {
     liveInFlight = false;
   }
 }
+
 
 document.addEventListener('visibilitychange', () => {
   if (!liveMode.checked) return;
