@@ -579,6 +579,22 @@ function isExplicitBrowsingRequest(text) {
   return /\b(browse|open|check|look up|verify|fact check|research)\b/i.test(text);
 }
 
+function isResearchIntentRequest(text) {
+  if (!text) return false;
+  return /\b(search|research|look up|latest|right now|rn|what happened|news|update)\b/i.test(text);
+}
+
+function parseResearchNeededSignal(reply) {
+  const raw = String(reply || '').trim();
+  if (!raw.startsWith('{') || !raw.endsWith('}')) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed?.researchNeeded === true ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function consolidateEvidence(evidence) {
   const rows = (evidence || []).map((item) => {
     const score = scoreEvidenceItem(item);
@@ -765,34 +781,51 @@ sendBtn.onclick = async () => {
 
 CHAT CONTEXT (recent messages, oldest→newest):
 ${chatContext}` : '';
-  const styleProfile = 'grounded-brief-opinion';
-  const instructionsBlock = `
-
-Assistant requirements:
-- Use CHAT CONTEXT from this current chat only to resolve vague follow-ups (e.g., "wdythink?") to the prior topic.
-- Decide whether web research is needed when the user asks about real-world claims, events, or public figures.
-- If you decide web research is needed, actually perform retrieval and ground the answer in that evidence.
-- If evidence is weak or conflicting, say so clearly and avoid overconfident claims.
-- Follow styleProfile key: ${styleProfile}.`;
-
   const enrichedMessage = prefetchedContext
     ? `${text}${contextBlock}
 
 Pre-read source material (use this first, then verify with retrieval):
-${prefetchedContext}${instructionsBlock}`
-    : `${text}${contextBlock}${instructionsBlock}`;
+${prefetchedContext}`
+    : `${text}${contextBlock}`;
 
   const safeEnrichedMessage = hardTruncateText(enrichedMessage, 12000);
+  const forceWebRequested = Boolean(prefetchedContext || isResearchIntentRequest(text));
 
-  const res = await callWorker({
+  let res = await callWorker({
     password: pw,
     message: safeEnrichedMessage,
-    forceWeb: Boolean(prefetchedContext),
+    forceWeb: forceWebRequested,
     researchMode: 'auto',
     retrievalBudget,
     liveInternet: true,
-    requestedAt: new Date().toISOString()
+    requestedAt: new Date().toISOString(),
+    styleProfile: 'grounded-brief-opinion',
+    clientGuidance: {
+      useChatContextOnly: true,
+      requireGroundedResearchForRealWorldClaims: true,
+      avoidOverconfidenceOnWeakEvidence: true
+    }
   }, { signal: activeChatController.signal });
+
+  const researchSignal = parseResearchNeededSignal(res.reply || '');
+  if (researchSignal && !(res.evidence || []).length) {
+    evidenceList.innerHTML = '<div class="small-muted">Worker requested research. Retrying with forced retrieval…</div>';
+    res = await callWorker({
+      password: pw,
+      message: safeEnrichedMessage,
+      forceWeb: true,
+      researchMode: 'forced',
+      retrievalBudget,
+      liveInternet: true,
+      requestedAt: new Date().toISOString(),
+      styleProfile: 'grounded-brief-opinion',
+      clientGuidance: {
+        useChatContextOnly: true,
+        requireGroundedResearchForRealWorldClaims: true,
+        avoidOverconfidenceOnWeakEvidence: true
+      }
+    }, { signal: activeChatController.signal });
+  }
 
   if (res.error) {
     appendMsg('Error', res.error);
