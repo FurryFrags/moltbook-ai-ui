@@ -725,6 +725,86 @@ async function synthesizeGroundedAnswer({ question, draftReply, evidence, passwo
   return cleanEvidenceText(synthesisRes?.reply || '');
 }
 
+function looksLikeTruncatedReply(text) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  if (value.length < 220) return false;
+
+  const normalized = value.replace(/[\u2026\s]+$/g, '').trim();
+  if (!normalized) return false;
+  if (/[.!?"')\]\}]$/.test(normalized)) return false;
+
+  const trailing = normalized.slice(-32).toLowerCase();
+  return /\b(and|or|but|because|which|that|with|for|to|are|is|was|were|have|has|had|can|could|would|should|will|while|when|where|who|whose|their|its|also|then|than|from|about|into|of|in|on|at|by|as|if|so)\s*$/.test(trailing) || /[:;,\-–—]$/.test(normalized);
+}
+
+async function requestReplyContinuation({ question, partialReply, password, signal }) {
+  if (!question || !partialReply) return '';
+  const tail = partialReply.slice(-500);
+  const prompt = [
+    'Continue the answer below from exactly where it ended.',
+    'Do not restart, do not repeat previous sentences, and do not add meta commentary.',
+    'Finish naturally in 1 short paragraph.',
+    '',
+    `User question: ${question}`,
+    '',
+    `Answer so far:\n${hardTruncateText(partialReply, 3500)}`,
+    '',
+    `Last visible ending:\n${tail}`
+  ].join('\n');
+
+  const continuationRes = await callWorker({
+    password,
+    message: prompt,
+    forceWeb: false,
+    researchMode: 'off',
+    liveInternet: false,
+    styleProfile: 'grounded-brief-opinion'
+  }, { signal });
+
+  if (continuationRes?.error) return '';
+  return cleanEvidenceText(continuationRes?.reply || '');
+}
+
+async function runDynamicSelfReview({ question, draftReply, evidence, password, signal }) {
+  const answer = String(draftReply || '').trim();
+  if (!question || !answer) return answer;
+
+  const evidenceBrief = evidence?.length
+    ? hardTruncateText(buildEvidenceBrief(evidence, 5), 3500)
+    : 'No retrieval evidence was provided for this turn.';
+
+  const prompt = [
+    'You are reviewing your own draft response before sending it to the user.',
+    'Revise for: completeness, non-cutoff ending, no contradictions, no irrelevant citation noise, and directness.',
+    'Keep the same intent and key facts unless correcting a clear issue.',
+    'Return only the improved final answer text.',
+    '',
+    `User question: ${question}`,
+    '',
+    `Draft response:\n${hardTruncateText(answer, 4500)}`,
+    '',
+    `Evidence context:\n${evidenceBrief}`
+  ].join('\n');
+
+  const reviewRes = await callWorker({
+    password,
+    message: prompt,
+    forceWeb: false,
+    researchMode: 'off',
+    liveInternet: false,
+    styleProfile: 'grounded-brief-opinion',
+    clientGuidance: {
+      avoidOverconfidenceOnWeakEvidence: true,
+      useProvidedEvidenceFirst: true
+    }
+  }, { signal });
+
+  if (reviewRes?.error) return answer;
+  const reviewed = cleanEvidenceText(reviewRes?.reply || '');
+  return reviewed || answer;
+}
+
 function extractGroundedSummary(rows) {
   if (!rows || !rows.length) {
     return 'I could not find enough reliable web evidence to answer confidently.';
@@ -946,7 +1026,29 @@ ${prefetchedContext}`
     password: pw,
     signal: activeChatController.signal
   });
-  const grounded = buildGroundedReply(synthesizedReply || res.reply || '', repairedEvidence);
+  let finalizedReply = synthesizedReply || res.reply || '';
+
+  if (looksLikeTruncatedReply(finalizedReply)) {
+    const continuation = await requestReplyContinuation({
+      question: text,
+      partialReply: finalizedReply,
+      password: pw,
+      signal: activeChatController.signal
+    });
+    if (continuation) {
+      finalizedReply = `${String(finalizedReply).trimEnd()} ${String(continuation).trimStart()}`.trim();
+    }
+  }
+
+  finalizedReply = await runDynamicSelfReview({
+    question: text,
+    draftReply: finalizedReply,
+    evidence: repairedEvidence,
+    password: pw,
+    signal: activeChatController.signal
+  });
+
+  const grounded = buildGroundedReply(finalizedReply, repairedEvidence);
   if (grounded.text) {
     const finalReply = grounded.metaHtml
       ? `${grounded.text}\n\n${grounded.metaHtml.replace(/<[^>]+>/g, '').trim()}`
