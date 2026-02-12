@@ -562,6 +562,31 @@ function buildGroundedReply(rawReply, evidence) {
 }
 
 
+function buildChatContextSnippet(chat, maxMessages = 8) {
+  const entries = (chat?.messages || []).slice(-maxMessages);
+  if (!entries.length) return '';
+  return entries
+    .map((entry) => `${entry.who}: ${String(entry.text || '').replace(/\s+/g, ' ').trim()}`)
+    .join('\n');
+}
+
+function shouldAutoResearch(text, chat) {
+  const q = String(text || '').trim().toLowerCase();
+  if (!q) return false;
+
+  const explicitResearch = /(research|look\s*(it|this)\s*up|fact\s*check|verify|source\?|citation|evidence)/.test(q);
+  if (explicitResearch) return true;
+
+  const shortFollowUp = q.length <= 80;
+  const referentialFollowUp = /(wdy\s*think|what\s*do\s*you\s*think|thoughts\??|this|that|it|same|more\??|why\??)/.test(q);
+
+  const recent = (chat?.messages || []).slice(-6).map((entry) => String(entry.text || '').toLowerCase()).join(' ');
+  const priorConfidenceIssue = /confidence estimate:\s*\d+%\s*·\s*conflicting|low-quality evidence detected/.test(recent);
+  const priorTopicalContext = /(tweet|article|news|claim|britain|source|reddit|youtube|url|http)/.test(recent);
+
+  return (shortFollowUp && referentialFollowUp && priorTopicalContext) || priorConfidenceIssue;
+}
+
 async function callWorker(payload, options = {}){
   try {
     const headers = { 'Content-Type':'application/json' };
@@ -601,6 +626,10 @@ sendBtn.onclick = async () => {
   const text = inputEl.value.trim();
   if(!text || chatInFlight) return;
 
+  const active = getActiveChat();
+  const chatContext = buildChatContextSnippet(active, 8);
+  const autoResearch = shouldAutoResearch(text, active);
+
   chatInFlight = true;
   sendBtn.disabled = true;
   chatStatus.textContent = 'Sending...';
@@ -619,14 +648,30 @@ sendBtn.onclick = async () => {
     appendMsg('System', `Could not pre-read linked content: ${err?.message || err}`);
   }
 
+  const contextBlock = chatContext ? `
+
+CHAT CONTEXT (recent messages, oldest→newest):
+${chatContext}` : '';
+  const instructionsBlock = `
+
+Assistant requirements:
+- Use CHAT CONTEXT to resolve vague follow-ups (e.g., "wdythink?") to the prior topic.
+- Decide whether web research is needed when the user asks about real-world claims, events, or public figures.
+- If evidence is weak or conflicting, say so clearly and avoid overconfident claims.`;
+
   const enrichedMessage = prefetchedContext
-    ? `${text}\n\nPre-read source material (use this first, then verify with retrieval):\n${prefetchedContext}\n\nRequired response style: 1) concise factual summary first, 2) your own opinion in your own words with personality. Do not claim a link is invalid unless the fetched source context says so.`
-    : text;
+    ? `${text}${contextBlock}
+
+Pre-read source material (use this first, then verify with retrieval):
+${prefetchedContext}${instructionsBlock}
+
+Required response style: 1) concise factual summary first, 2) your own opinion in your own words with personality. Do not claim a link is invalid unless the fetched source context says so.`
+    : `${text}${contextBlock}${instructionsBlock}`;
 
   const res = await callWorker({
     password: pw,
     message: enrichedMessage,
-    forceWeb: forceWeb.checked || Boolean(prefetchedContext),
+    forceWeb: forceWeb.checked || Boolean(prefetchedContext) || autoResearch,
     liveInternet: true,
     requestedAt: new Date().toISOString()
   }, { signal: activeChatController.signal });
