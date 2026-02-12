@@ -178,6 +178,11 @@ let tabsWindow = null;
 let tabsWindowReady = false;
 let chats = [];
 let activeChatId = null;
+const DEFAULT_MESSAGE_RENDER_LIMIT = 50;
+const messageRenderState = {
+  replyArea: DEFAULT_MESSAGE_RENDER_LIMIT,
+  messages: DEFAULT_MESSAGE_RENDER_LIMIT
+};
 const CHAT_STORAGE_KEY = 'ashen-chat-sessions-v1';
 const CHAT_RETENTION = {
   maxChats: 80,
@@ -351,24 +356,72 @@ function formatMessageHtml(entry) {
   return pieces.join('');
 }
 
-function renderReplyTranscript() {
+function renderMessageNode(entry) {
+  const bubble = document.createElement('div');
+  bubble.className = `msg ${roleClass(entry?.who)}`;
+  bubble.innerHTML = formatMessageHtml(entry);
+  return bubble;
+}
+
+function appendNewMessageToContainer(container, entry) {
+  const stateKey = container.id;
   const active = getActiveChat();
-  replyArea.innerHTML = '';
-  (active?.messages || []).forEach((entry) => {
-    const bubble = document.createElement('div');
-    bubble.className = `msg ${roleClass(entry.who)}`;
-    bubble.innerHTML = formatMessageHtml(entry);
-    replyArea.appendChild(bubble);
+  const totalMessages = (active?.messages || []).length;
+  const hasLoadOlder = container.firstElementChild?.dataset?.loadOlder === 'true';
+  const renderedMessages = hasLoadOlder ? container.children.length - 1 : container.children.length;
+  const cap = messageRenderState[stateKey];
+  if (renderedMessages >= cap) return false;
+
+  if (!hasLoadOlder && totalMessages > cap) {
+    renderMessageList(container, active?.messages || []);
+    return true;
+  }
+
+  container.appendChild(renderMessageNode(entry));
+  return true;
+}
+
+function createLoadOlderButton(container, remainingCount) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.dataset.loadOlder = 'true';
+  btn.textContent = `Load older (${remainingCount})`;
+  btn.onclick = () => {
+    messageRenderState[container.id] += DEFAULT_MESSAGE_RENDER_LIMIT;
+    const active = getActiveChat();
+    renderMessageList(container, active?.messages || []);
+  };
+  return btn;
+}
+
+function renderMessageList(container, entries) {
+  const cap = messageRenderState[container.id] || DEFAULT_MESSAGE_RENDER_LIMIT;
+  const startIndex = Math.max(0, entries.length - cap);
+  const visibleEntries = entries.slice(startIndex);
+  container.innerHTML = '';
+
+  if (startIndex > 0) {
+    container.appendChild(createLoadOlderButton(container, startIndex));
+  }
+
+  visibleEntries.forEach((entry) => {
+    container.appendChild(renderMessageNode(entry));
   });
+}
+
+function renderReplyTranscript(forceFullRender = false) {
+  const active = getActiveChat();
+  const entries = active?.messages || [];
+
+  if (forceFullRender) {
+    messageRenderState.replyArea = DEFAULT_MESSAGE_RENDER_LIMIT;
+    messageRenderState.messages = DEFAULT_MESSAGE_RENDER_LIMIT;
+  }
+
+  renderMessageList(replyArea, entries);
   replyArea.scrollTop = replyArea.scrollHeight;
 
-  messagesDiv.innerHTML = '';
-  (active?.messages || []).forEach((entry) => {
-    const d = document.createElement('div');
-    d.className = `msg ${roleClass(entry.who)}`;
-    d.innerHTML = formatMessageHtml(entry);
-    messagesDiv.appendChild(d);
-  });
+  renderMessageList(messagesDiv, entries);
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
@@ -386,7 +439,7 @@ function renderChatList() {
       activeChatId = chat.id;
       persistChats();
       renderChatList();
-      renderReplyTranscript();
+      renderReplyTranscript(true);
     };
     chatListEl.appendChild(item);
   });
@@ -401,7 +454,13 @@ function appendMsg(who,text){
   updateChatTitle(active);
   persistChats();
   renderChatList();
-  renderReplyTranscript();
+  const replyAppended = appendNewMessageToContainer(replyArea, entry);
+  const logAppended = appendNewMessageToContainer(messagesDiv, entry);
+  if (!replyAppended || !logAppended) {
+    renderReplyTranscript();
+  }
+  replyArea.scrollTop = replyArea.scrollHeight;
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
 function initializeChats() {
@@ -418,7 +477,7 @@ function initializeChats() {
   persistChats();
 
   renderChatList();
-  renderReplyTranscript();
+  renderReplyTranscript(true);
 }
 
 function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -650,7 +709,7 @@ if (newChatBtn) {
     activeChatId = chat.id;
     persistChats();
     renderChatList();
-    renderReplyTranscript();
+    renderReplyTranscript(true);
     chatStatus.textContent = 'Started a new chat';
   };
 }
