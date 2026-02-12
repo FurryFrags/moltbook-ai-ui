@@ -135,7 +135,7 @@
 
 <!-- SoundCloud widget API will be injected when needed -->
 <script>
-const WORKER_URL = "https://ashen.furryfrags.workers.dev"; // change to your worker URL
+const WORKER_URL = "${{ secrets.CLOUDFLARE_WORKER_URL }}"; // populated from repo secret
 const pwEl = document.getElementById('pw');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
