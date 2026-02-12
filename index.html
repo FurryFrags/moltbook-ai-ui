@@ -462,8 +462,11 @@ async function prefetchLinkedContext(text, pw) {
     if (res?.tab) {
       loadedAny = true;
       selectedTabId = res.tab.id || selectedTabId;
-      const summary = cleanEvidenceText(res.tab.summary || 'No summary extracted.');
-      const excerpt = cleanEvidenceText((res.tab.content || '').slice(0, 1200));
+      const summaryRaw = cleanEvidenceText(res.tab.summary || '');
+      const hasSummary = Boolean(summaryRaw);
+      const summary = hasSummary ? summaryRaw : 'No summary extracted.';
+      const rawExcerpt = cleanEvidenceText((res.tab.content || '').slice(0, 260));
+      const excerpt = hasSummary ? '' : rawExcerpt;
       snippets.push([
         `Source URL: ${res.tab.finalUrl || res.tab.url || url}`,
         `Title: ${cleanEvidenceText(res.tab.title || '(untitled)')}`,
@@ -564,13 +567,35 @@ function buildGroundedReply(rawReply, evidence) {
   return { text: combined, metaHtml };
 }
 
+function estimateTokens(text) {
+  return Math.ceil(String(text || '').length / 4);
+}
 
-function buildChatContextSnippet(chat, maxMessages = 8) {
+function hardTruncateText(text, maxChars) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+function buildChatContextSnippet(chat, maxMessages = 8, maxChars = 1800, maxTokens = 450) {
   const entries = (chat?.messages || []).slice(-maxMessages);
   if (!entries.length) return '';
-  return entries
-    .map((entry) => `${entry.who}: ${String(entry.text || '').replace(/\s+/g, ' ').trim()}`)
-    .join('\n');
+  const rows = [];
+  let usedChars = 0;
+  let usedTokens = 0;
+
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    const row = `${entry.who}: ${hardTruncateText(entry.text || '', 280)}`;
+    const rowChars = row.length + 1;
+    const rowTokens = estimateTokens(row);
+    if (rows.length > 0 && (usedChars + rowChars > maxChars || usedTokens + rowTokens > maxTokens)) break;
+    rows.unshift(row);
+    usedChars += rowChars;
+    usedTokens += rowTokens;
+  }
+
+  return rows.join('\n');
 }
 
 async function callWorker(payload, options = {}){
@@ -613,7 +638,7 @@ sendBtn.onclick = async () => {
   if(!text || chatInFlight) return;
 
   const active = getActiveChat();
-  const chatContext = buildChatContextSnippet(active, 8);
+  const chatContext = buildChatContextSnippet(active, 8, 1600, 400);
   const linkedUrls = extractHttpUrls(text);
   const explicitBrowsingRequest = linkedUrls.length > 0 && isExplicitBrowsingRequest(text);
   const retrievalBudget = {
@@ -645,26 +670,28 @@ sendBtn.onclick = async () => {
 
 CHAT CONTEXT (recent messages, oldest→newest):
 ${chatContext}` : '';
+  const styleProfile = 'grounded-brief-opinion';
   const instructionsBlock = `
 
 Assistant requirements:
 - Use CHAT CONTEXT from this current chat only to resolve vague follow-ups (e.g., "wdythink?") to the prior topic.
 - Decide whether web research is needed when the user asks about real-world claims, events, or public figures.
 - If you decide web research is needed, actually perform retrieval and ground the answer in that evidence.
-- If evidence is weak or conflicting, say so clearly and avoid overconfident claims.`;
+- If evidence is weak or conflicting, say so clearly and avoid overconfident claims.
+- Follow styleProfile key: ${styleProfile}.`;
 
   const enrichedMessage = prefetchedContext
     ? `${text}${contextBlock}
 
 Pre-read source material (use this first, then verify with retrieval):
-${prefetchedContext}${instructionsBlock}
-
-Required response style: 1) concise factual summary first, 2) your own opinion in your own words with personality. Do not claim a link is invalid unless the fetched source context says so.`
+${prefetchedContext}${instructionsBlock}`
     : `${text}${contextBlock}${instructionsBlock}`;
+
+  const safeEnrichedMessage = hardTruncateText(enrichedMessage, 12000);
 
   const res = await callWorker({
     password: pw,
-    message: enrichedMessage,
+    message: safeEnrichedMessage,
     forceWeb: Boolean(prefetchedContext),
     researchMode: 'auto',
     retrievalBudget,
