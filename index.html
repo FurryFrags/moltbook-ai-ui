@@ -94,7 +94,6 @@
       <div class="below-chat">
       <div class="small">Password (required)</div>
       <input id="pw" type="password" placeholder="Password"/>
-      <label class="switch"><input id="forceWeb" type="checkbox"/> Force web search before replies</label>
       <label class="switch"><input id="liveMode" type="checkbox"/> Live internet mode</label>
       <div class="inline-row">
         <input id="liveSeconds" type="text" value="60" placeholder="seconds" />
@@ -105,7 +104,7 @@
         <button id="openBtn">Open</button>
       </div>
       <button id="openTabsWindow" class="tabs-window-launch">Open Large Tabs Window</button>
-      <div id="evidenceList">No web evidence yet. Toggle "Force web search" and send a query to gather evidence.</div>
+      <div id="evidenceList">No web evidence yet. Ashen will decide when research is needed.</div>
       <div id="embedContainer" style="display:none"></div>
       <div id="tabContent">No tab selected.</div>
       <div style="display:none">
@@ -155,7 +154,6 @@ const fetchTabBtn = document.getElementById('fetchTab');
 const summTabBtn = document.getElementById('summTab');
 const closeTabBtn = document.getElementById('closeTab');
 const openTabsWindowBtn = document.getElementById('openTabsWindow');
-const forceWeb = document.getElementById('forceWeb');
 const evidenceList = document.getElementById('evidenceList');
 const liveMode = document.getElementById('liveMode');
 const liveSeconds = document.getElementById('liveSeconds');
@@ -570,21 +568,36 @@ function buildChatContextSnippet(chat, maxMessages = 8) {
     .join('\n');
 }
 
-function shouldAutoResearch(text, chat) {
-  const q = String(text || '').trim().toLowerCase();
-  if (!q) return false;
+async function shouldAutoResearch(text, chat, signal) {
+  const prompt = [
+    'You are deciding if a chatbot should perform live web research before answering.',
+    'Base the decision ONLY on the current user message and the provided chat context.',
+    'Return strict JSON only: {"researchNeeded":true|false,"reason":"..."}.',
+    'Set researchNeeded=true when accuracy depends on current or verifiable real-world facts.',
+    'Set researchNeeded=false for purely personal, creative, or self-contained chat.',
+    '',
+    `USER_MESSAGE:\n${String(text || '').trim()}`,
+    '',
+    `CHAT_CONTEXT:\n${buildChatContextSnippet(chat, 10) || '(none)'}`
+  ].join('\n');
 
-  const explicitResearch = /(research|look\s*(it|this)\s*up|fact\s*check|verify|source\?|citation|evidence)/.test(q);
-  if (explicitResearch) return true;
+  const decision = await callWorker({
+    password: pwEl.value,
+    message: prompt,
+    forceWeb: false,
+    liveInternet: false,
+    requestedAt: new Date().toISOString()
+  }, { signal });
 
-  const shortFollowUp = q.length <= 80;
-  const referentialFollowUp = /(wdy\s*think|what\s*do\s*you\s*think|thoughts\??|this|that|it|same|more\??|why\??)/.test(q);
-
-  const recent = (chat?.messages || []).slice(-6).map((entry) => String(entry.text || '').toLowerCase()).join(' ');
-  const priorConfidenceIssue = /confidence estimate:\s*\d+%\s*·\s*conflicting|low-quality evidence detected/.test(recent);
-  const priorTopicalContext = /(tweet|article|news|claim|britain|source|reddit|youtube|url|http)/.test(recent);
-
-  return (shortFollowUp && referentialFollowUp && priorTopicalContext) || priorConfidenceIssue;
+  const raw = String(decision?.reply || '').trim();
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return false;
+  try {
+    const parsed = JSON.parse(jsonMatch[0]);
+    return Boolean(parsed?.researchNeeded);
+  } catch {
+    return false;
+  }
 }
 
 async function callWorker(payload, options = {}){
@@ -628,7 +641,7 @@ sendBtn.onclick = async () => {
 
   const active = getActiveChat();
   const chatContext = buildChatContextSnippet(active, 8);
-  const autoResearch = shouldAutoResearch(text, active);
+  const autoResearch = await shouldAutoResearch(text, active, activeChatController?.signal);
 
   chatInFlight = true;
   sendBtn.disabled = true;
@@ -655,8 +668,9 @@ ${chatContext}` : '';
   const instructionsBlock = `
 
 Assistant requirements:
-- Use CHAT CONTEXT to resolve vague follow-ups (e.g., "wdythink?") to the prior topic.
+- Use CHAT CONTEXT from this current chat only to resolve vague follow-ups (e.g., "wdythink?") to the prior topic.
 - Decide whether web research is needed when the user asks about real-world claims, events, or public figures.
+- If you decide web research is needed, actually perform retrieval and ground the answer in that evidence.
 - If evidence is weak or conflicting, say so clearly and avoid overconfident claims.`;
 
   const enrichedMessage = prefetchedContext
@@ -671,7 +685,7 @@ Required response style: 1) concise factual summary first, 2) your own opinion i
   const res = await callWorker({
     password: pw,
     message: enrichedMessage,
-    forceWeb: forceWeb.checked || Boolean(prefetchedContext) || autoResearch,
+    forceWeb: Boolean(prefetchedContext) || autoResearch,
     liveInternet: true,
     requestedAt: new Date().toISOString()
   }, { signal: activeChatController.signal });
@@ -940,7 +954,7 @@ openTabsWindowBtn.onclick = () => {
 
 function renderEvidence(evidence) {
   if (!evidence || !evidence.length) {
-    evidenceList.innerHTML = '<div class="small-muted">No evidence found (worker attempted retrieval but found nothing). Try toggling Force web search and provide a clearer query or permit opening specific pages.</div>';
+    evidenceList.innerHTML = '<div class="small-muted">No evidence found (worker attempted retrieval but found nothing). Try providing a clearer query or permit opening specific pages.</div>';
     return;
   }
   evidenceList.innerHTML = '';
