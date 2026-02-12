@@ -679,6 +679,53 @@ function consolidateEvidence(evidence) {
   return { bullets, meta, top };
 }
 
+function buildEvidenceBrief(evidence, maxItems = 5) {
+  const rows = (evidence || []).slice(0, maxItems).map((item, idx) => {
+    const title = cleanEvidenceText(item.title) || '(untitled)';
+    const summary = cleanEvidenceText(item.summary || item.snippet) || '(no summary)';
+    const url = normalizeEvidenceUrl(item.url) || '(no url)';
+    return `${idx + 1}. ${title}\nURL: ${url}\nSummary: ${summary}`;
+  });
+  return rows.join('\n\n');
+}
+
+async function synthesizeGroundedAnswer({ question, draftReply, evidence, password, signal }) {
+  if (!question || !evidence?.length) return '';
+  const evidenceBrief = hardTruncateText(buildEvidenceBrief(evidence, 6), 5000);
+  if (!evidenceBrief) return '';
+
+  const synthesisPrompt = [
+    'You are revising a response after web retrieval.',
+    'Use the evidence below as the primary source of truth.',
+    'If sources conflict, say so briefly and prefer the most direct/credible source.',
+    'Do not mention training-data cutoffs when evidence is provided.',
+    'Return only the final answer text (no JSON, no extra headings).',
+    '',
+    `User question: ${question}`,
+    '',
+    draftReply ? `Initial draft answer:\n${hardTruncateText(draftReply, 1800)}` : '',
+    '',
+    `Retrieved evidence:\n${evidenceBrief}`
+  ].filter(Boolean).join('\n');
+
+  const synthesisRes = await callWorker({
+    password,
+    message: synthesisPrompt,
+    forceWeb: false,
+    researchMode: 'off',
+    liveInternet: false,
+    styleProfile: 'grounded-brief-opinion',
+    clientGuidance: {
+      useProvidedEvidenceFirst: true,
+      requireGroundedResearchForRealWorldClaims: true,
+      avoidOverconfidenceOnWeakEvidence: true
+    }
+  }, { signal });
+
+  if (synthesisRes?.error) return '';
+  return cleanEvidenceText(synthesisRes?.reply || '');
+}
+
 function extractGroundedSummary(rows) {
   if (!rows || !rows.length) {
     return 'I could not find enough reliable web evidence to answer confidently.';
@@ -893,7 +940,14 @@ ${prefetchedContext}`
   }
 
   const repairedEvidence = await repairEvidence(res.evidence || [], pw);
-  const grounded = buildGroundedReply(res.reply || '', repairedEvidence);
+  const synthesizedReply = await synthesizeGroundedAnswer({
+    question: text,
+    draftReply: res.reply || '',
+    evidence: repairedEvidence,
+    password: pw,
+    signal: activeChatController.signal
+  });
+  const grounded = buildGroundedReply(synthesizedReply || res.reply || '', repairedEvidence);
   if (grounded.text) {
     const finalReply = grounded.metaHtml
       ? `${grounded.text}\n\n${grounded.metaHtml.replace(/<[^>]+>/g, '').trim()}`
