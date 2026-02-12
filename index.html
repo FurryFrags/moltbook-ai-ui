@@ -179,7 +179,11 @@ let tabsWindowReady = false;
 let chats = [];
 let activeChatId = null;
 const CHAT_STORAGE_KEY = 'ashen-chat-sessions-v1';
-const PREVIOUS_CHAT_TITLE = 'Previous chats';
+const CHAT_RETENTION = {
+  maxChats: 80,
+  maxMessagesPerChat: 120,
+  maxCharsPerMessage: 4000
+};
 
 const TRUSTED_NEWS_DOMAINS = [
   'apnews.com','reuters.com','bbc.com','cnn.com','nytimes.com','washingtonpost.com','theguardian.com',
@@ -229,36 +233,68 @@ function makeChat(title = 'New Chat', messages = []) {
     title,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    messages
+    messages,
+    archived: false
   };
-}
-
-function ensurePreviousChatsBucket() {
-  let previous = chats.find((chat) => chat.title === PREVIOUS_CHAT_TITLE);
-  if (!previous) {
-    previous = makeChat(PREVIOUS_CHAT_TITLE, []);
-    chats.push(previous);
-  }
-  return previous;
 }
 
 function archiveActiveChatToPrevious() {
   const active = getActiveChat();
-  if (!active || active.title === PREVIOUS_CHAT_TITLE || !(active.messages || []).length) return;
+  if (!active || !(active.messages || []).length) return;
+  active.archived = true;
+  active.updatedAt = new Date().toISOString();
+}
 
-  const previous = ensurePreviousChatsBucket();
-  const block = [
-    `--- ${active.title || 'Untitled chat'} · ${new Date(active.updatedAt || Date.now()).toLocaleString()} ---`,
-    ...active.messages.map((entry) => `${entry.who}: ${entry.text}`),
-    ''
-  ];
+function normalizeChat(chat) {
+  const now = new Date().toISOString();
+  return {
+    ...chat,
+    id: chat?.id || (crypto?.randomUUID ? crypto.randomUUID() : `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`),
+    title: chat?.title || 'New Chat',
+    createdAt: chat?.createdAt || chat?.updatedAt || now,
+    updatedAt: chat?.updatedAt || chat?.createdAt || now,
+    archived: Boolean(chat?.archived),
+    messages: Array.isArray(chat?.messages) ? chat.messages : []
+  };
+}
 
-  previous.messages = previous.messages || [];
-  previous.messages.push({ who: 'System', text: block.join('\n') });
-  previous.updatedAt = new Date().toISOString();
+function pruneChatsForRetention(sourceChats, preferredActiveId = null) {
+  const normalized = (Array.isArray(sourceChats) ? sourceChats : []).map((chat) => {
+    const safeChat = normalizeChat(chat);
+    safeChat.messages = safeChat.messages
+      .slice(-CHAT_RETENTION.maxMessagesPerChat)
+      .map((entry) => ({
+        who: String(entry?.who || 'System'),
+        text: String(entry?.text || '').slice(0, CHAT_RETENTION.maxCharsPerMessage)
+      }));
+    return safeChat;
+  });
+
+  const deduped = [];
+  const seen = new Set();
+  normalized.forEach((chat) => {
+    if (!chat.id || seen.has(chat.id)) return;
+    seen.add(chat.id);
+    deduped.push(chat);
+  });
+
+  deduped.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  let retained = deduped.slice(0, CHAT_RETENTION.maxChats);
+  if (!retained.length) retained = [makeChat('New Chat', [])];
+
+  let nextActiveId = preferredActiveId;
+  if (!retained.some((chat) => chat.id === nextActiveId)) {
+    const latestUnarchived = retained.find((chat) => !chat.archived);
+    nextActiveId = (latestUnarchived || retained[0]).id;
+  }
+
+  return { chats: retained, activeChatId: nextActiveId };
 }
 
 function persistChats() {
+  const retained = pruneChatsForRetention(chats, activeChatId);
+  chats = retained.chats;
+  activeChatId = retained.activeChatId;
   localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify({ chats, activeChatId }));
 }
 
@@ -376,21 +412,10 @@ function initializeChats() {
     loaded = null;
   }
 
-  if (loaded?.chats?.length) {
-    chats = loaded.chats.map((chat) => ({
-      ...chat,
-      messages: Array.isArray(chat.messages) ? chat.messages : [],
-      title: chat.title || 'New Chat',
-      updatedAt: chat.updatedAt || chat.createdAt || new Date().toISOString()
-    }));
-    ensurePreviousChatsBucket();
-    activeChatId = chats.some((c) => c.id === loaded.activeChatId) ? loaded.activeChatId : chats[0].id;
-  } else {
-    const migrated = makeChat(PREVIOUS_CHAT_TITLE, []);
-    chats = [migrated];
-    activeChatId = migrated.id;
-    persistChats();
-  }
+  const retained = pruneChatsForRetention(loaded?.chats || [], loaded?.activeChatId);
+  chats = retained.chats;
+  activeChatId = retained.activeChatId;
+  persistChats();
 
   renderChatList();
   renderReplyTranscript();
@@ -620,9 +645,8 @@ if (newChatBtn) {
   newChatBtn.onclick = () => {
     archiveActiveChatToPrevious();
 
-    const previous = ensurePreviousChatsBucket();
     const chat = makeChat('New Chat', []);
-    chats = [chat, ...chats.filter((c) => c.id !== previous.id), previous];
+    chats = [chat, ...chats];
     activeChatId = chat.id;
     persistChats();
     renderChatList();
