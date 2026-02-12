@@ -484,6 +484,11 @@ async function prefetchLinkedContext(text, pw) {
   return snippets.join('\n\n---\n\n');
 }
 
+function isExplicitBrowsingRequest(text) {
+  if (!text) return false;
+  return /\b(browse|open|check|look up|verify|fact check|research)\b/i.test(text);
+}
+
 function consolidateEvidence(evidence) {
   const rows = (evidence || []).map((item) => {
     const score = scoreEvidenceItem(item);
@@ -568,38 +573,6 @@ function buildChatContextSnippet(chat, maxMessages = 8) {
     .join('\n');
 }
 
-async function shouldAutoResearch(text, chat, signal) {
-  const prompt = [
-    'You are deciding if a chatbot should perform live web research before answering.',
-    'Base the decision ONLY on the current user message and the provided chat context.',
-    'Return strict JSON only: {"researchNeeded":true|false,"reason":"..."}.',
-    'Set researchNeeded=true when accuracy depends on current or verifiable real-world facts.',
-    'Set researchNeeded=false for purely personal, creative, or self-contained chat.',
-    '',
-    `USER_MESSAGE:\n${String(text || '').trim()}`,
-    '',
-    `CHAT_CONTEXT:\n${buildChatContextSnippet(chat, 10) || '(none)'}`
-  ].join('\n');
-
-  const decision = await callWorker({
-    password: pwEl.value,
-    message: prompt,
-    forceWeb: false,
-    liveInternet: false,
-    requestedAt: new Date().toISOString()
-  }, { signal });
-
-  const raw = String(decision?.reply || '').trim();
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return false;
-  try {
-    const parsed = JSON.parse(jsonMatch[0]);
-    return Boolean(parsed?.researchNeeded);
-  } catch {
-    return false;
-  }
-}
-
 async function callWorker(payload, options = {}){
   try {
     const headers = { 'Content-Type':'application/json' };
@@ -641,7 +614,12 @@ sendBtn.onclick = async () => {
 
   const active = getActiveChat();
   const chatContext = buildChatContextSnippet(active, 8);
-  const autoResearch = await shouldAutoResearch(text, active, activeChatController?.signal);
+  const linkedUrls = extractHttpUrls(text);
+  const explicitBrowsingRequest = linkedUrls.length > 0 && isExplicitBrowsingRequest(text);
+  const retrievalBudget = {
+    maxPrefetchUrls: 2,
+    maxSummaryWords: 220
+  };
 
   chatInFlight = true;
   sendBtn.disabled = true;
@@ -651,14 +629,16 @@ sendBtn.onclick = async () => {
 
   appendMsg('You', text);
   inputEl.value = '';
-  evidenceList.innerHTML = '<div class="small-muted">Running retrieval (if enabled)...</div>';
+  evidenceList.innerHTML = '<div class="small-muted">Worker deciding whether retrieval is needed...</div>';
   const startedAt = performance.now();
 
   let prefetchedContext = '';
-  try {
-    prefetchedContext = await prefetchLinkedContext(text, pw);
-  } catch (err) {
-    appendMsg('System', `Could not pre-read linked content: ${err?.message || err}`);
+  if (explicitBrowsingRequest) {
+    try {
+      prefetchedContext = await prefetchLinkedContext(text, pw);
+    } catch (err) {
+      appendMsg('System', `Could not pre-read linked content: ${err?.message || err}`);
+    }
   }
 
   const contextBlock = chatContext ? `
@@ -685,7 +665,9 @@ Required response style: 1) concise factual summary first, 2) your own opinion i
   const res = await callWorker({
     password: pw,
     message: enrichedMessage,
-    forceWeb: Boolean(prefetchedContext) || autoResearch,
+    forceWeb: Boolean(prefetchedContext),
+    researchMode: 'auto',
+    retrievalBudget,
     liveInternet: true,
     requestedAt: new Date().toISOString()
   }, { signal: activeChatController.signal });
