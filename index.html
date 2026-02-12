@@ -20,6 +20,9 @@
   .msg{padding:10px 12px;border-radius:14px;margin:6px 0;word-break:break-word;line-height:1.4;max-width:82%}
   .msg.user{margin-left:auto;background:#1a2a48;border:1px solid #35578f}
   .msg.ashen{margin-right:auto;background:#171717;border:1px solid #2b2b2f}
+  .msg details.msg-section{margin-top:8px;border:1px solid #2a2f3a;border-radius:10px;background:#101216;overflow:hidden}
+  .msg details.msg-section summary{cursor:pointer;padding:8px 10px;font-size:12px;font-weight:600;color:#a9c4ff;user-select:none}
+  .msg details.msg-section .msg-section-body{padding:0 10px 10px 10px;font-size:12px;color:#cfd6e6;white-space:pre-wrap}
   .msg.system,.msg.error{max-width:100%;background:#0b0b0b;border:1px solid #26262d;color:#ddd}
   input[type=text],input[type=password],textarea{width:100%;padding:10px;background:#0b0b0b;border:1px solid #25252a;color:#eee;border-radius:12px;box-sizing:border-box}
   #input{min-height:64px;max-height:180px;line-height:1.4;resize:vertical}
@@ -271,13 +274,56 @@ function updateChatTitle(chat) {
   chat.title = String(userEntry.text || '').trim().slice(0, 42) || 'New Chat';
 }
 
+function formatMessageHtml(entry) {
+  const who = String(entry?.who || '');
+  const text = String(entry?.text || '');
+  const baseLabel = `<b>${escapeHtml(who)}:</b>`;
+  if (who.toLowerCase() !== 'ashen') {
+    return `${baseLabel} ${escapeHtml(text).replace(/\n/g, '<br/>')}`;
+  }
+
+  const lines = text.split(/\r?\n/);
+  const sections = [];
+  let current = { type: 'main', title: '', lines: [] };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const lower = trimmed.toLowerCase();
+    if (lower === 'evidence highlights:' || lower === 'evidences:') {
+      sections.push(current);
+      current = { type: 'details', title: 'Evidences', lines: [] };
+      continue;
+    }
+    if (lower === 'context gathered:' || lower === 'context:') {
+      sections.push(current);
+      current = { type: 'details', title: 'Context Gathered', lines: [] };
+      continue;
+    }
+    current.lines.push(line);
+  }
+  sections.push(current);
+
+  const main = sections.find((sec) => sec.type === 'main');
+  const mainText = (main?.lines || []).join('\n').trim();
+  const pieces = [baseLabel];
+  if (mainText) {
+    pieces.push(`<div>${escapeHtml(mainText).replace(/\n/g, '<br/>')}</div>`);
+  }
+
+  sections.filter((sec) => sec.type === 'details' && sec.lines.join('').trim()).forEach((sec) => {
+    pieces.push(`<details class="msg-section"><summary>${escapeHtml(sec.title)}</summary><div class="msg-section-body">${escapeHtml(sec.lines.join('\n').trim())}</div></details>`);
+  });
+
+  return pieces.join('');
+}
+
 function renderReplyTranscript() {
   const active = getActiveChat();
   replyArea.innerHTML = '';
   (active?.messages || []).forEach((entry) => {
     const bubble = document.createElement('div');
     bubble.className = `msg ${roleClass(entry.who)}`;
-    bubble.innerHTML = `<b>${escapeHtml(entry.who)}:</b> ${escapeHtml(entry.text).replace(/\n/g, '<br/>')}`;
+    bubble.innerHTML = formatMessageHtml(entry);
     replyArea.appendChild(bubble);
   });
   replyArea.scrollTop = replyArea.scrollHeight;
@@ -286,7 +332,7 @@ function renderReplyTranscript() {
   (active?.messages || []).forEach((entry) => {
     const d = document.createElement('div');
     d.className = `msg ${roleClass(entry.who)}`;
-    d.innerHTML = `<b>${escapeHtml(entry.who)}:</b> ${escapeHtml(entry.text).replace(/\n/g, '<br/>')}`;
+    d.innerHTML = formatMessageHtml(entry);
     messagesDiv.appendChild(d);
   });
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
@@ -491,21 +537,20 @@ function buildGroundedReply(rawReply, evidence) {
   if (!bullets.length) return { text: rawReply || '', metaHtml: '' };
 
   const genericReply = /according to my training data|since my training data only goes up to|i don't have any information|i don't have the capability to browse|cannot browse/i.test(rawReply || '');
-  const header = genericReply
-    ? 'Grounded answer (built from live retrieval evidence):'
-    : 'Grounded answer (cross-checked against live retrieval evidence):';
-
   const groundedSummary = extractGroundedSummary(top);
+  const lead = (!genericReply && rawReply)
+    ? String(rawReply || '').trim()
+    : `Quick grounded take: ${groundedSummary}`;
+
+  const contextLines = [];
+  if (top[0]?.url) contextLines.push(`Primary source: ${top[0].url}`);
+  if (top[0]?.summary) contextLines.push(`Top-source summary: ${top[0].summary}`);
 
   const combined = [
-    header,
-    '',
-    `Answer: ${groundedSummary}`,
-    (!genericReply && rawReply ? `\nModel draft (for reference): ${rawReply}` : ''),
-    '',
-    'Evidence highlights:',
-    ...bullets
-  ].join('\n');
+    lead,
+    contextLines.length ? `\nContext Gathered:\n${contextLines.join('\n')}` : '',
+    bullets.length ? `\nEvidences:\n${bullets.slice(0, 3).join('\n')}` : ''
+  ].filter(Boolean).join('\n\n');
 
   const riskClass = (meta.contradictionRisk || meta.lowReliability || meta.confidence < 50) ? 'answer-warn' : 'answer-ok';
   const riskLabel = (meta.contradictionRisk || meta.lowReliability || meta.confidence < 50)
@@ -515,6 +560,7 @@ function buildGroundedReply(rawReply, evidence) {
   const metaHtml = `<div class="answer-meta ${riskClass}">Confidence estimate: ${meta.confidence}% · ${riskLabel}</div>`;
   return { text: combined, metaHtml };
 }
+
 
 async function callWorker(payload, options = {}){
   try {
