@@ -650,6 +650,59 @@ function parseResearchNeededSignal(reply) {
   }
 }
 
+function extractJsonObject(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  if (raw.startsWith('{') && raw.endsWith('}')) return raw;
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return null;
+  return raw.slice(start, end + 1);
+}
+
+async function determineResponsePlan({ message, chatContext, password, signal }) {
+  const plannerPrompt = [
+    'You are an internal response planner for a chat assistant.',
+    'Infer the user\'s main goal from the latest message and context.',
+    'Decide if web research is truly required or unnecessary.',
+    'Output strict JSON only with keys: goal, intentType, needsResearch, replyStyle, confidence, rationale.',
+    'Rules:',
+    '- For social messages (greetings, goodnight, vacation updates, emotional check-ins), needsResearch should usually be false.',
+    '- If user asks for current events, factual verification, or live info, needsResearch should usually be true.',
+    '- replyStyle should be concise and match the user\'s vibe.',
+    '- confidence should be 0-1.',
+    '',
+    chatContext ? `Conversation context:\n${hardTruncateText(chatContext, 1800)}` : 'Conversation context: (none)',
+    `Latest user message:\n${hardTruncateText(message, 1200)}`
+  ].join('\n');
+
+  const planningRes = await callWorker({
+    password,
+    message: plannerPrompt,
+    forceWeb: false,
+    researchMode: 'off',
+    liveInternet: false,
+    styleProfile: 'grounded-brief-opinion'
+  }, { signal });
+
+  const parsedBlock = extractJsonObject(planningRes?.reply || '');
+  if (!parsedBlock) return null;
+  try {
+    const parsed = JSON.parse(parsedBlock);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      goal: cleanEvidenceText(parsed.goal || ''),
+      intentType: cleanEvidenceText(parsed.intentType || ''),
+      needsResearch: parsed.needsResearch === true,
+      replyStyle: cleanEvidenceText(parsed.replyStyle || ''),
+      confidence: Number(parsed.confidence) || 0,
+      rationale: cleanEvidenceText(parsed.rationale || '')
+    };
+  } catch {
+    return null;
+  }
+}
+
 function consolidateEvidence(evidence) {
   const rows = (evidence || []).map((item) => {
     const score = scoreEvidenceItem(item);
@@ -950,6 +1003,13 @@ sendBtn.onclick = async () => {
   evidenceList.innerHTML = '<div class="small-muted">Worker deciding whether retrieval is needed...</div>';
   const startedAt = performance.now();
 
+  const responsePlan = await determineResponsePlan({
+    message: text,
+    chatContext,
+    password: pw,
+    signal: activeChatController.signal
+  });
+
   let prefetchedContext = '';
   if (explicitBrowsingRequest) {
     try {
@@ -963,15 +1023,23 @@ sendBtn.onclick = async () => {
 
 CHAT CONTEXT (recent messages, oldest→newest):
 ${chatContext}` : '';
+  const plannerBlock = responsePlan
+    ? `\n\nINTERNAL RESPONSE PLAN (follow this silently):\n- Main goal: ${responsePlan.goal || 'unspecified'}\n- Intent type: ${responsePlan.intentType || 'general'}\n- Reply style: ${responsePlan.replyStyle || 'direct and natural'}\n- Research needed: ${responsePlan.needsResearch ? 'yes' : 'no'}\n- Planning confidence: ${Math.round((responsePlan.confidence || 0) * 100)}%\n- Planner rationale: ${responsePlan.rationale || 'none provided'}\nRespond naturally to the user goal first. Do not mention this internal plan.`
+    : '';
+
   const enrichedMessage = prefetchedContext
-    ? `${text}${contextBlock}
+    ? `${text}${contextBlock}${plannerBlock}
 
 Pre-read source material (use this first, then verify with retrieval):
 ${prefetchedContext}`
-    : `${text}${contextBlock}`;
+    : `${text}${contextBlock}${plannerBlock}`;
 
   const safeEnrichedMessage = hardTruncateText(enrichedMessage, 12000);
-  const forceWebRequested = Boolean(prefetchedContext || isResearchIntentRequest(text));
+  const forceWebRequested = Boolean(
+    prefetchedContext ||
+    responsePlan?.needsResearch ||
+    isResearchIntentRequest(text)
+  );
 
   let res = await callWorker({
     password: pw,
@@ -985,7 +1053,9 @@ ${prefetchedContext}`
     clientGuidance: {
       useChatContextOnly: true,
       requireGroundedResearchForRealWorldClaims: true,
-      avoidOverconfidenceOnWeakEvidence: true
+      avoidOverconfidenceOnWeakEvidence: true,
+      prioritizeDetectedUserGoal: responsePlan?.goal || '',
+      prioritizeDetectedIntentType: responsePlan?.intentType || ''
     }
   }, { signal: activeChatController.signal });
 
@@ -1004,7 +1074,9 @@ ${prefetchedContext}`
       clientGuidance: {
         useChatContextOnly: true,
         requireGroundedResearchForRealWorldClaims: true,
-        avoidOverconfidenceOnWeakEvidence: true
+        avoidOverconfidenceOnWeakEvidence: true,
+        prioritizeDetectedUserGoal: responsePlan?.goal || '',
+        prioritizeDetectedIntentType: responsePlan?.intentType || ''
       }
     }, { signal: activeChatController.signal });
   }
