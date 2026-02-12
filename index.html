@@ -200,7 +200,10 @@ const TRUSTED_NEWS_DOMAINS = [
 ];
 
 function safeParseUrl(url) {
-  try { return new URL(url); } catch { return null; }
+  const value = String(url || '').trim();
+  if (!value) return null;
+  const normalized = value.startsWith('//') ? `https:${value}` : value;
+  try { return new URL(normalized); } catch { return null; }
 }
 
 function normalizeEvidenceUrl(rawUrl) {
@@ -502,6 +505,59 @@ function scoreEvidenceItem(item) {
 
 function cleanEvidenceText(v) {
   return String(v || '').replace(/\s+/g, ' ').trim();
+}
+
+function isEvidenceBrokenText(text) {
+  return /400 bad request|returned an error 400|status code 4\d\d|status code 5\d\d|no retrievable hits|not accessible due to/i.test(cleanEvidenceText(text));
+}
+
+function shouldRepairEvidenceItem(item) {
+  const url = normalizeEvidenceUrl(item?.url || '');
+  if (!url) return false;
+  const brokenSummary = isEvidenceBrokenText(item?.summary || '');
+  const brokenSnippet = isEvidenceBrokenText(item?.snippet || '');
+  const parsed = safeParseUrl(url);
+  const isDuckRedirect = parsed && /duckduckgo\.com$/i.test(parsed.hostname) && parsed.pathname.startsWith('/l/');
+  return Boolean(brokenSummary || brokenSnippet || isDuckRedirect);
+}
+
+async function repairEvidence(evidence, pw) {
+  const rows = Array.isArray(evidence) ? evidence.map((item) => ({ ...item })) : [];
+  if (!rows.length || !pw) return rows;
+
+  const repairCandidates = rows.filter(shouldRepairEvidenceItem).slice(0, 3);
+  for (const item of repairCandidates) {
+    const normalizedUrl = normalizeEvidenceUrl(item.url || '');
+    if (!normalizedUrl) continue;
+
+    const fetched = await callWorker({
+      password: pw,
+      command: {
+        type: 'open_tab',
+        url: normalizedUrl,
+        fetchNow: true,
+        summarizeAfter: true,
+        words: 180
+      },
+      liveInternet: true,
+      requestedAt: new Date().toISOString()
+    });
+
+    const tab = fetched?.tab;
+    if (!tab) continue;
+
+    const fetchedSummary = cleanEvidenceText(tab.summary || '');
+    const fetchedContent = cleanEvidenceText((tab.content || '').slice(0, 320));
+    if (!fetchedSummary && !fetchedContent) continue;
+
+    item.url = tab.finalUrl || tab.url || normalizedUrl;
+    item.title = tab.title || item.title;
+    item.summary = fetchedSummary || item.summary;
+    if (fetchedContent && !item.snippet) item.snippet = fetchedContent;
+    item.sourceType = 'verified_fetch';
+  }
+
+  return rows;
 }
 
 function extractHttpUrls(text) {
@@ -836,14 +892,15 @@ ${prefetchedContext}`
     return;
   }
 
-  const grounded = buildGroundedReply(res.reply || '', res.evidence || []);
+  const repairedEvidence = await repairEvidence(res.evidence || [], pw);
+  const grounded = buildGroundedReply(res.reply || '', repairedEvidence);
   if (grounded.text) {
     const finalReply = grounded.metaHtml
       ? `${grounded.text}\n\n${grounded.metaHtml.replace(/<[^>]+>/g, '').trim()}`
       : grounded.text;
     appendMsg('Ashen', finalReply);
   }
-  if (res.evidence) renderEvidence(res.evidence);
+  renderEvidence(repairedEvidence);
   if (res.tab) displayTabContent(res.tab);
   if (res.tabs) renderTabs(res.tabs);
   if (res.console) renderConsole(res.console);
@@ -1150,11 +1207,12 @@ function renderEvidence(evidence) {
   }
   evidenceList.innerHTML = '';
   for (const e of evidence) {
+    const normalizedUrl = normalizeEvidenceUrl(e.url || '');
     const el = document.createElement('div');
     el.className = 'evidence-item';
     el.innerHTML = `
       <div class="evidence-title">[${e.idx}] ${escapeHtml(e.title || '(no title)')}</div>
-      <div class="small-muted">${escapeHtml(e.url || '(no url)')} — source: ${escapeHtml(e.sourceType || '(unknown)')}</div>
+      <div class="small-muted">${escapeHtml(normalizedUrl || '(no url)')} — source: ${escapeHtml(e.sourceType || '(unknown)')}</div>
       <div style="height:6px"></div>
       <div>${escapeHtml((e.snippet || '').slice(0,800))}</div>
       <div style="height:8px"></div>
@@ -1193,9 +1251,11 @@ function displayTabContent(tab) {
 }
 
 function normalizeEmbeddableUrl(url) {
-  if (!url) return '';
-  if (/^https?:\/\//i.test(url)) return url;
-  return `https://${url}`;
+  const trimmed = String(url || '').trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith('//')) return `https:${trimmed}`;
+  return `https://${trimmed}`;
 }
 
 function extractYouTubeEmbedUrl(rawUrl) {
