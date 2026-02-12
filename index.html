@@ -604,7 +604,6 @@ async function prefetchLinkedContext(text, pw) {
 
     if (res?.tab) {
       loadedAny = true;
-      selectedTabId = res.tab.id || selectedTabId;
       const summaryRaw = cleanEvidenceText(res.tab.summary || '');
       const hasSummary = Boolean(summaryRaw);
       const summary = hasSummary ? summaryRaw : 'No summary extracted.';
@@ -955,7 +954,9 @@ ${prefetchedContext}`
     appendMsg('Ashen', finalReply);
   }
   renderEvidence(repairedEvidence);
-  if (res.tab) displayTabContent(res.tab);
+  if (res.tab && (!selectedTabId || res.tab.id === selectedTabId)) {
+    displayTabContent(res.tab);
+  }
   if (res.tabs) renderTabs(res.tabs);
   if (res.console) renderConsole(res.console);
 
