@@ -63,6 +63,15 @@
   .inline-row{display:flex;gap:6px;align-items:center}
   .inline-row input[type=text],.inline-row input[type=password]{flex:1}
   .compact-title{margin:0;font-size:14px}
+  .sidebar-danger-dropdown{background:#121214;border:1px solid #2f2226;border-radius:12px;overflow:hidden}
+  .sidebar-danger-dropdown summary{cursor:pointer;list-style:none;padding:10px 12px;font-size:12px;font-weight:700;letter-spacing:.01em;color:#ffb3b3;user-select:none}
+  .sidebar-danger-dropdown summary::-webkit-details-marker{display:none}
+  .sidebar-danger-dropdown summary::after{content:'▾';float:right;color:#d49a9a;transition:transform .2s ease}
+  .sidebar-danger-dropdown:not([open]) summary::after{transform:rotate(-90deg)}
+  .sidebar-danger-body{border-top:1px solid #2f2226;padding:10px;display:flex;flex-direction:column;gap:8px}
+  .danger-help{font-size:11px;color:#d8a1a1;line-height:1.35}
+  .danger-btn{background:#c0392b}
+  .danger-btn:hover{background:#d44739}
   .drawer-toggle{position:absolute;top:14px;right:14px;z-index:15}
   #right{position:absolute;right:14px;top:58px;bottom:14px;width:340px;z-index:20;transition:transform .25s ease,opacity .25s ease;box-shadow:0 6px 24px rgba(0,0,0,.45)}
   #right.closed{transform:translateX(380px);opacity:0;pointer-events:none}
@@ -77,6 +86,15 @@
     <h3>Chats</h3>
     <button id="newChatBtn">New Chat</button>
     <div id="chatList"></div>
+    <details class="sidebar-danger-dropdown">
+      <summary>Danger zone: reset Ashen memory</summary>
+      <div class="sidebar-danger-body">
+        <div class="danger-help">This permanently clears all local chats and requests a full memory wipe on Ashen. You must re-enter your password and type DELETE ALL.</div>
+        <input id="wipePw" type="password" placeholder="Re-enter password" autocomplete="off"/>
+        <input id="wipeConfirm" type="text" placeholder="Type DELETE ALL to confirm" autocomplete="off"/>
+        <button id="wipeAllBtn" class="danger-btn">Delete all chats + memory</button>
+      </div>
+    </details>
   </div>
 
   <div class="panel" id="center">
@@ -159,6 +177,9 @@ const liveMode = document.getElementById('liveMode');
 const liveSeconds = document.getElementById('liveSeconds');
 const browseNowBtn = document.getElementById('browseNowBtn');
 const chatStatus = document.getElementById('chatStatus');
+const wipePwEl = document.getElementById('wipePw');
+const wipeConfirmEl = document.getElementById('wipeConfirm');
+const wipeAllBtn = document.getElementById('wipeAllBtn');
 const rightDrawer = document.getElementById('right');
 const toggleDrawerBtn = document.getElementById('toggleDrawer');
 const closeDrawerBtn = document.getElementById('closeDrawer');
@@ -484,6 +505,70 @@ function initializeChats() {
 
   renderChatList();
   renderReplyTranscript(true);
+}
+
+async function wipeAllChatsAndMemory() {
+  const primaryPw = pwEl.value.trim();
+  const reenteredPw = String(wipePwEl?.value || '').trim();
+  const confirmation = String(wipeConfirmEl?.value || '').trim();
+
+  if (!primaryPw) {
+    alert('Enter the main password first.');
+    return;
+  }
+  if (!reenteredPw) {
+    alert('Re-enter password to continue.');
+    return;
+  }
+  if (reenteredPw !== primaryPw) {
+    alert('Re-entered password does not match the current password.');
+    return;
+  }
+  if (confirmation !== 'DELETE ALL') {
+    alert('Type DELETE ALL exactly to confirm.');
+    return;
+  }
+
+  const approved = window.confirm('Final warning: this will permanently delete all local chats and request Ashen to wipe all prior memory. Continue?');
+  if (!approved) return;
+
+  if (wipeAllBtn) wipeAllBtn.disabled = true;
+  chatStatus.textContent = 'Deleting all memory and chats...';
+
+  let remoteError = '';
+  try {
+    const res = await callWorker({
+      password: reenteredPw,
+      command: {
+        type: 'wipe_all_memory',
+        scope: 'all',
+        deleteChats: true,
+        reason: 'user_requested_full_reset'
+      }
+    });
+    if (res?.error) remoteError = String(res.error);
+  } catch (err) {
+    remoteError = String(err?.message || err);
+  }
+
+  chats = [makeChat('New Chat', [])];
+  activeChatId = chats[0].id;
+  localStorage.removeItem(CHAT_STORAGE_KEY);
+  persistChats();
+  renderChatList();
+  renderReplyTranscript(true);
+  evidenceList.innerHTML = 'No web evidence yet. Ashen will decide when research is needed.';
+  tabContentDiv.textContent = 'No tab selected.';
+  appendMsg('System', remoteError
+    ? `Local chats were deleted. Ashen memory wipe request may have failed: ${remoteError}`
+    : 'All local chats were deleted and a full Ashen memory wipe was requested.');
+
+  if (wipePwEl) wipePwEl.value = '';
+  if (wipeConfirmEl) wipeConfirmEl.value = '';
+  chatStatus.textContent = remoteError
+    ? 'Local reset done; remote memory wipe may need retry'
+    : 'All chats and memory reset completed';
+  if (wipeAllBtn) wipeAllBtn.disabled = false;
 }
 
 function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -1968,6 +2053,12 @@ inputEl.addEventListener('keydown', (event) => {
     sendBtn.click();
   }
 });
+
+if (wipeAllBtn) {
+  wipeAllBtn.onclick = () => {
+    wipeAllChatsAndMemory();
+  };
+}
 
 initializeChats();
 
